@@ -20,7 +20,6 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'sensor_manager = sensors.sensor_manager:main',
         ],
     },
 )
