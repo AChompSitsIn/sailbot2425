@@ -1,6 +1,4 @@
-class update_rudder:
-
-    def updateRudder(target):
+def updateRudder(target):
         print("Called update rudder")
         print("Target angle is: " + target)
 

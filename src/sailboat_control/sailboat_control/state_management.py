@@ -1,54 +1,99 @@
-class boat:
-    print("boat initialized")
+class Boat:
+    def __init__(self, event_type: str):
+
+        """
+        Initialize the boat with a selected event type.
+
+        :param event_type: The type of event (e.g... event names ->)
+        """
+
+        self.event_type = event_type
+        self.autonomous_system_initialize = False
+
+    def pick_event(self):
+        """
+        Pick and initialize the event based on the event type
+        """
+
+        event_classes = {
+
+            "fleet_race": FleetRace,
+            "precision_navigation": PrecisionNavigation,
+            "station_keeping": StationKeeping,
+            "endurance": Endurance,
+            "payload": Payload
+
+        }
+
+        event_class = event_classes.get(self.event_type.lower())
+
+        if event_class:
+            event_instance = event_class()
+            event_instance.initialize_event(self)
+        else:
+            print(f"Error: Event type '{self.event_type}' is not recognized.")
+
+# base event class
+class Event:
+
+    def initialize_event(self, boat: Boat):
+        """
+        Initialize the event; this should always be overridden by child classes
+
+        :param boat: the boat instance to operate on
+        """
+
+        raise NotImplementedError("This method should be implemented in subclasses")
+
+class FleetRace(Event):
     
-    # event types
-    fleet_race = False
-    station_keeping = False
-    precision_navigation = False
-    endurance = False
-    payload = False
+    def initialize_event(self, boat: Boat):
+        """
+        Initialize the fleet race event, autonomous should never be activated
+        """
 
-    if(fleet_race):
-        print("fleet race event type initialized")
-    
-    if(station_keeping):
-        print("station keeping event type initialized")
-    
-    if(precision_navigation):
-        print("precision navigation event type initialized")
+        print("Initializing Fleet Race Event Type...")
 
-    if(endurance):
-        print("endurance event type initialized")
+class PrecisionNavigation(Event):
 
-    if(payload):
-        print("payload race event type initialized")
+    def initialize_event(self, boat: Boat):
+        """
+        Initialize the precision navigation event      
+        """
 
-class fleet_race:
+        print("Initializing The Precision Navigation Event Type")
+        boat.autonomous_system_initialized = True
+        print("Autonomous System Initialized For Precision Navigation")
 
-    print("fleet race initialized, autonomous navigation is set to false by default")
-    waypoints = None
-    autonomous = False
+class StationKeeping(Event):
 
-class station_keeping:
+    def initialize_event(self, boat: Boat):
+        """
+        Initialize the station keeping event
+        """
 
-    print("staton keeping initialized, autonomous navigation is set to false by default")
-    waypoints = []
-    autonomous = False
+        print("Initializing The Station Keeping Event Type")
+        boat.autonomous_system_initializef = True
+        print("Autonomous System Initialized For Station Keeping")
 
-class precision_navigation:
+class Endurance(Event):
 
-    print("precision navigation initialized, autonomous navigation is set to false by default")
-    waypoints = []
-    autonomous = False
+    def initialize_event(self, boat: Boat):
+        """
+        Initialize the endurance event
+        """
 
-class endurance:
+        print("Initializing The Endurance Event Type")
+        boat.autonomous_system_initializef = True
+        print("Autonomous System Initialized For Endurance")
 
-    print("endurance initialized, autonomous navigation is set to false by default")
-    waypoints = []
-    autonomous = False
+class Payload(Event):
 
-class payload:
+    def initialize_event(self, boat: Boat):
+        """
+        Initialize the payload event
+        """
 
-    print("payload initialized, autonomous navigation is set to false by default")
-    waypoints = []
-    autonomous = False
+        print("Initializing The Payload Event Type")
+        boat.autonomous_system_initializef = True
+        print("Autonomous System Initialized For Payload")
