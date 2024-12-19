@@ -20,6 +20,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'state_management = sailboat_control.state_management_node:main',
+            'mock_radio = sailboat_control.mock_radio_node:main',
         ],
     },
 )
