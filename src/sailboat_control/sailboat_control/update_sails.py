@@ -1,2 +1,2 @@
-def updateSails(tal):
+#def updateSails(tal):
 	# TBD, arduino interface method

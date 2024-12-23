@@ -20,6 +20,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'dummy_radio = sensors.radio:main',
+            'dummy_gps = sensors.gps:main',
+            'dummy_wind = sensors.wind:main',
         ],
     },
 )
