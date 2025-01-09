@@ -1,7 +1,9 @@
 from enum import Enum
 from typing import List, Optional
+from rclpy.node import Node
 from path_planning.path_planning.waypoint import Waypoint
 from .events import F, Pr, S, E, P, D
+from .event_control import create_event_control
 
 class ControlMode(Enum):
     RC = "rc"                    
@@ -17,8 +19,9 @@ class BoatState:
         self.autonomous_enabled: bool = False
 
 class Boat:
-    def __init__(self, event_type: str):
+    def __init__(self, event_type: str, node: Node):
         self.event_type = event_type
+        self.node = node  # store ros node for sensor access
         self.autonomous_system_initialized = False
         self.state = BoatState()
         self.current_event = None
@@ -35,13 +38,17 @@ class Boat:
             "payload": P,
             "developer_mode": D
         }
-
+        
         event_class = event_classes.get(self.event_type.lower())
         if event_class:
             self.current_event = event_class()
             self.current_event.initialize_event(self)
-            # create the appropriate event control
-            self.event_control = create_event_control(self.event_type, self.waypoints)
+            # create the appropriate event control with ros node
+            self.event_control = create_event_control(
+                self.event_type,
+                self.waypoints,
+                self.node
+            )
 
     def start_event(self) -> None:
         """initialize and start event"""
