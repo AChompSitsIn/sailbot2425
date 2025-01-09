@@ -7,7 +7,16 @@ import csv
 from geometry_utils import Angle, Vector
 
 class PolarData:
-    """manages boat performance data from polar diagram"""
+    """manages boat performance data from polar diagram
+    
+    I'm not a fan of the whole system of relying on relatively outdated polar data calculated using the sim coefficents
+    But I don't really have any better ideas with current standings. After we do an on water test to see how accurate the
+    simulated polars are, we can evaluate the priority of changing the polar system. 
+
+    If the polars are inaccurate, this will probably create the need for a python script that can take the
+    boat information and generate the polars much easier. This should be done regardless, but when it will be done 
+    is TBD
+    """
     def __init__(self):
         self.tws_values = []  # true wind speeds
         self.twa_values = []  # true wind angles
