@@ -59,7 +59,7 @@ class StateManagementNode(Node):
         if last_waypoint:
             self.get_logger().info(f"RC interrupt - last waypoint: {last_waypoint}")
         # Switch to RC control during interrupt
-        self.boat.event_control.handle_rc()s
+        self.boat.event_control.handle_rc()
 
     def _handle_resume_autonomous(self):
         """handle resume autonomous command"""
