@@ -11,7 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'pyserial'],
     zip_safe=True,
     maintainer='kehillah',
     maintainer_email='kehillah@todo.todo',
@@ -21,7 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'dummy_radio = sensors.radio:main',
-            'dummy_gps = sensors.gps:main',
+            'gps = sensors.gps:main',
             'dummy_wind = sensors.wind:main',
         ],
     },

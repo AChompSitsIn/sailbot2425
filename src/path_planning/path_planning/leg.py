@@ -157,4 +157,3 @@ class Leg:
         jibe_point = (start[0] + k.xcomp(), start[1] + k.ycomp())
         
         return [jibe_point, end]
-
