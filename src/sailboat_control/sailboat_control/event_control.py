@@ -7,6 +7,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Float32, Float64, String
+from .buoy_detection import BuoyDetector
 
 class EventControl(ABC):
     """base class for event control"""
@@ -22,6 +23,9 @@ class EventControl(ABC):
         self.wind_direction = 0.0
         self.gps_time = ""
         self.satellites = 0
+        
+        # set up buoy detector with default 5 meter threshold
+        self.buoy_detector = BuoyDetector(threshold_distance=5.0)
         
         # set up subscriptions
         self._setup_subscriptions()
@@ -59,9 +63,39 @@ class EventControl(ABC):
         )
     
     def _gps_callback(self, msg: NavSatFix):
-        """store latest gps position data"""
+        """store latest gps position data and check for proximity to buoys"""
         self.current_lat = msg.latitude
         self.current_lon = msg.longitude
+        
+        # Check if we're near any buoys
+        newly_reached_buoys = self.buoy_detector.check_buoy_proximity(
+            (self.current_lat, self.current_lon), 
+            self.waypoints
+        )
+        
+        # Log any newly reached buoys
+        for buoy in newly_reached_buoys:
+            self.node.get_logger().info(
+                f"Reached buoy at lat={buoy.lat}, lon={buoy.long} "
+                f"(pass #{buoy.n_passed})"
+            )
+            
+            # Update the current waypoint index based on the most recently passed buoy
+            current_buoy = self.buoy_detector.get_current_buoy()
+            if current_buoy is not None:
+                # Find the index of the current buoy
+                try:
+                    current_index = self.waypoints.index(current_buoy)
+                    # Set the next waypoint index
+                    self.current_waypoint_index = (current_index + 1) % len(self.waypoints)
+                    
+                    next_waypoint = self.waypoints[self.current_waypoint_index]
+                    self.node.get_logger().info(
+                        f"Next target: Waypoint at lat={next_waypoint.lat}, lon={next_waypoint.long}"
+                    )
+                except ValueError:
+                    # Buoy not in waypoints list (should not happen)
+                    self.node.get_logger().error("Current buoy not found in waypoints list!")
         
         # Log position updates for debugging
         self.node.get_logger().debug(f"Position update: lat={self.current_lat:.6f}, lon={self.current_lon:.6f}")
@@ -96,6 +130,38 @@ class EventControl(ABC):
     def get_wind_direction(self) -> float:
         """get latest wind direction"""
         return self.wind_direction
+    
+    def get_current_buoy(self) -> Optional[Waypoint]:
+        """get the most recently passed buoy"""
+        return self.buoy_detector.get_current_buoy()
+    
+    def get_next_waypoint(self) -> Optional[Waypoint]:
+        """get the next target waypoint based on most recently passed buoy"""
+        if not self.waypoints:
+            return None
+            
+        if self.current_waypoint_index < len(self.waypoints):
+            return self.waypoints[self.current_waypoint_index]
+        
+        return None
+    
+    def set_buoy_threshold(self, threshold_meters: float):
+        """set the threshold distance for buoy detection"""
+        self.buoy_detector.threshold_distance = threshold_meters
+        self.node.get_logger().info(f"Buoy detection threshold set to {threshold_meters} meters")
+    
+    def reset_buoy_detection(self):
+        """reset buoy detection state, marking all buoys as not reached"""
+        self.buoy_detector.reset()
+        for buoy in self.waypoints:
+            buoy.marked = False
+            buoy.n_passed = 0
+        self.current_waypoint_index = 0
+        self.node.get_logger().info("Buoy detection state reset")
+    
+    def get_reached_buoys_count(self) -> int:
+        """get the number of buoys that have been reached at least once"""
+        return self.buoy_detector.get_reached_buoys_count()
 
     def handle_rc(self):
         """standard rc control implementation for all events"""
@@ -117,9 +183,9 @@ class PrecisionNavigationControl(EventControl):
         wind_dir = self.get_wind_direction()
         speed = self.get_current_speed()
         
-        # get next waypoint
-        if self.current_waypoint_index < len(self.waypoints):
-            target_waypoint = self.waypoints[self.current_waypoint_index]
+        # get next waypoint based on most recently passed buoy
+        next_waypoint = self.get_next_waypoint()
+        if next_waypoint:
             # implement precision navigation autonomous behavior
             pass
 
@@ -131,8 +197,8 @@ class StationKeepingControl(EventControl):
         speed = self.get_current_speed()
         
         # get station keeping target point
-        if self.current_waypoint_index < len(self.waypoints):
-            station_point = self.waypoints[self.current_waypoint_index]
+        next_waypoint = self.get_next_waypoint()
+        if next_waypoint:
             # implement station keeping autonomous behavior
             pass
 
@@ -143,9 +209,9 @@ class EnduranceControl(EventControl):
         wind_dir = self.get_wind_direction()
         speed = self.get_current_speed()
         
-        # get next waypoint in endurance course
-        if self.current_waypoint_index < len(self.waypoints):
-            target_waypoint = self.waypoints[self.current_waypoint_index]
+        # get next waypoint based on most recently passed buoy
+        next_waypoint = self.get_next_waypoint()
+        if next_waypoint:
             # implement endurance autonomous behavior
             pass
 
@@ -156,9 +222,9 @@ class PayloadControl(EventControl):
         wind_dir = self.get_wind_direction()
         speed = self.get_current_speed()
         
-        # get next waypoint for payload delivery
-        if self.current_waypoint_index < len(self.waypoints):
-            target_waypoint = self.waypoints[self.current_waypoint_index]
+        # get next waypoint based on most recently passed buoy
+        next_waypoint = self.get_next_waypoint()
+        if next_waypoint:
             # implement payload delivery autonomous behavior
             pass
 
@@ -169,9 +235,9 @@ class DeveloperControl(EventControl):
         wind_dir = self.get_wind_direction()
         speed = self.get_current_speed()
         
-        # get next waypoint for testing
-        if self.current_waypoint_index < len(self.waypoints):
-            target_waypoint = self.waypoints[self.current_waypoint_index]
+        # get next waypoint based on most recently passed buoy
+        next_waypoint = self.get_next_waypoint()
+        if next_waypoint:
             # implement developer testing autonomous behavior
             pass
 
