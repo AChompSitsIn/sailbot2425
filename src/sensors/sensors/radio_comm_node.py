@@ -12,7 +12,7 @@ class RadioCommNode(Node):
     """
     ROS Node for radio communication between the sailbot and a remote control station.
     Receives commands from the remote station and publishes them to the 'radio_commands' topic.
-    Sends status updates back to the remote station.
+    Sends status updates back to the remote station when requested.
     """
     def __init__(self):
         super().__init__('radio_comm_node')
@@ -20,11 +20,9 @@ class RadioCommNode(Node):
         # Parameters for serial connection
         self.declare_parameter('port', '/dev/ttyUSB0')
         self.declare_parameter('baud_rate', 57600)
-        self.declare_parameter('update_rate', 1.0)  # Status update rate in Hz
         
         self.port = self.get_parameter('port').value
         self.baud_rate = self.get_parameter('baud_rate').value
-        self.update_rate = self.get_parameter('update_rate').value
         
         # Command publisher
         self.command_publisher = self.create_publisher(
@@ -49,30 +47,39 @@ class RadioCommNode(Node):
                 timeout=1.0
             )
             self.get_logger().info(f'Connected to radio on {self.port} at {self.baud_rate} baud')
+            
+            # Send initial connection message
+            self.send_initial_message()
         except serial.SerialException as e:
             self.get_logger().error(f'Failed to connect to radio: {e}')
             self.serial_conn = None
         
-        # Initialize status message
-        self.status_msg = {
-            "mode": "RC",
-            "event": "unknown",
-            "autonomous": False,
-            "position": [0.0, 0.0],
-            "speed": 0.0,
-            "wind_dir": 0.0
-        }
+        # Initialize status message storage
+        self.latest_status = None
         
-        # Create threads
+        # Create thread for receiving commands
         self.running = True
         self.receiver_thread = threading.Thread(target=self.receive_commands)
         self.receiver_thread.daemon = True
         self.receiver_thread.start()
         
-        # Timer for status updates
-        self.timer = self.create_timer(1.0/self.update_rate, self.send_status_update)
+        # Timer for periodic initial message sending
+        self.create_timer(5.0, self.send_initial_message)
         
         self.get_logger().info('Radio Communication Node initialized')
+    
+    def send_initial_message(self):
+        """Send initial message to establish connection with the remote terminal"""
+        if not self.serial_conn:
+            return
+            
+        try:
+            # Simple initial message: 0xB0 (header) + 0x55 + 0xAA (magic bytes)
+            init_msg = bytearray([0xB0, 0x55, 0xAA])
+            self.serial_conn.write(init_msg)
+            self.get_logger().debug('Sent initial connection message')
+        except Exception as e:
+            self.get_logger().error(f'Error sending initial message: {e}')
     
     def receive_commands(self):
         """Background thread to receive commands from the radio"""
@@ -101,17 +108,22 @@ class RadioCommNode(Node):
                             # Extract command
                             command = buffer[1]
                             
-                            # Process command
-                            msg = Int32()
-                            msg.data = command
-                            self.command_publisher.publish(msg)
-                            
-                            # Log received command
-                            self.get_logger().info(f'Received command: {command}')
-                            
                             # Send immediate acknowledgment
                             ack_msg = bytearray([0xA0, command, command ^ 0xFF])
                             self.serial_conn.write(ack_msg)
+                            
+                            # Special handling for status request command (9)
+                            if command == 9:
+                                self.get_logger().info('Status update requested')
+                                self.send_status_update_simple()
+                            else:
+                                # Process other commands
+                                msg = Int32()
+                                msg.data = command
+                                self.command_publisher.publish(msg)
+                                
+                                # Log received command
+                                self.get_logger().info(f'Received command: {command}')
                         else:
                             self.get_logger().warning('Invalid checksum in received command')
                         
@@ -127,42 +139,28 @@ class RadioCommNode(Node):
                 time.sleep(0.1)
     
     def status_callback(self, msg):
-        """Process status updates from the boat system"""
-        try:
-            # Parse the status message (assuming JSON string)
-            status_data = json.loads(msg.data)
-            
-            # Update our status message
-            if 'control_mode' in status_data:
-                self.status_msg["mode"] = status_data['control_mode']
-            if 'event_type' in status_data:
-                self.status_msg["event"] = status_data['event_type']
-            if 'autonomous_enabled' in status_data:
-                self.status_msg["autonomous"] = status_data['autonomous_enabled']
-                
-        except Exception as e:
-            self.get_logger().error(f'Error processing status update: {e}')
+        """Store latest status update from the boat system"""
+        self.latest_status = msg.data
     
-    def send_status_update(self):
-        """Send status updates to the remote station"""
+    def send_status_update_simple(self):
+        """Send a simple status update message to the remote station"""
         if not self.serial_conn:
             return
             
         try:
-            # Create JSON string from status data
-            status_json = json.dumps(self.status_msg)
+            # For now, just send a simple text message
+            status_text = "Status update complete"
             
             # Calculate length of data
-            data_length = len(status_json)
+            data_length = len(status_text)
             
             # Send header (0xD0), length, and data
             header = bytearray([0xD0, data_length])
             self.serial_conn.write(header)
-            self.serial_conn.write(status_json.encode('utf-8'))
+            self.serial_conn.write(status_text.encode('utf-8'))
             
-            # Log status update (less frequent)
-            if self.get_clock().now().nanoseconds % (5 * 10**9) < 10**9:  # roughly every 5 seconds
-                self.get_logger().info(f'Sent status update: {status_json}')
+            # Log status update
+            self.get_logger().info(f'Sent simple status update')
                 
         except Exception as e:
             self.get_logger().error(f'Error sending status update: {e}')
