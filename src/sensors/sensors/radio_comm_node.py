@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32, String
+from std_msgs.msg import Int32, String, Float64
+from sensor_msgs.msg import NavSatFix
 import serial
 import struct
 import threading
@@ -20,9 +21,11 @@ class RadioCommNode(Node):
         # Parameters for serial connection
         self.declare_parameter('port', '/dev/ttyUSB0')
         self.declare_parameter('baud_rate', 57600)
+        self.declare_parameter('status_interval', 5.0)  # Interval in seconds for auto status updates
         
         self.port = self.get_parameter('port').value
         self.baud_rate = self.get_parameter('baud_rate').value
+        self.status_interval = self.get_parameter('status_interval').value
         
         # Command publisher
         self.command_publisher = self.create_publisher(
@@ -36,6 +39,30 @@ class RadioCommNode(Node):
             String,
             'boat_status',
             self.status_callback,
+            10
+        )
+        
+        # Subscribe to GPS data
+        self.gps_subscription = self.create_subscription(
+            NavSatFix,
+            'gps/fix',
+            self.gps_callback,
+            10
+        )
+        
+        # Subscribe to GPS speed
+        self.speed_subscription = self.create_subscription(
+            Float64,
+            'gps/speed',
+            self.speed_callback,
+            10
+        )
+        
+        # Subscribe to GPS fix quality
+        self.fix_quality_subscription = self.create_subscription(
+            Int32,
+            'gps/fix_quality',
+            self.fix_quality_callback,
             10
         )
         
@@ -54,8 +81,15 @@ class RadioCommNode(Node):
             self.get_logger().error(f'Failed to connect to radio: {e}')
             self.serial_conn = None
         
-        # Initialize status message storage
-        self.latest_status = None
+        # Initialize sensor data storage
+        self.latest_status = "{}"
+        self.latest_gps = {
+            "latitude": 0.0,
+            "longitude": 0.0,
+            "fix_quality": 0,
+            "speed": 0.0,
+            "timestamp": 0
+        }
         
         # Create thread for receiving commands
         self.running = True
@@ -65,6 +99,9 @@ class RadioCommNode(Node):
         
         # Timer for periodic initial message sending
         self.create_timer(5.0, self.send_initial_message)
+        
+        # Timer for periodic status updates
+        self.create_timer(self.status_interval, self.send_periodic_status)
         
         self.get_logger().info('Radio Communication Node initialized')
     
@@ -80,6 +117,20 @@ class RadioCommNode(Node):
             self.get_logger().debug('Sent initial connection message')
         except Exception as e:
             self.get_logger().error(f'Error sending initial message: {e}')
+    
+    def gps_callback(self, msg: NavSatFix):
+        """Store latest GPS position data"""
+        self.latest_gps["latitude"] = msg.latitude
+        self.latest_gps["longitude"] = msg.longitude
+        self.latest_gps["timestamp"] = self.get_clock().now().to_msg().sec
+    
+    def speed_callback(self, msg: Float64):
+        """Store latest GPS speed data"""
+        self.latest_gps["speed"] = msg.data
+    
+    def fix_quality_callback(self, msg: Int32):
+        """Store latest GPS fix quality data"""
+        self.latest_gps["fix_quality"] = msg.data
     
     def receive_commands(self):
         """Background thread to receive commands from the radio"""
@@ -115,7 +166,7 @@ class RadioCommNode(Node):
                             # Special handling for status request command (9)
                             if command == 9:
                                 self.get_logger().info('Status update requested')
-                                self.send_status_update_simple()
+                                self.send_status_update()
                             else:
                                 # Process other commands
                                 msg = Int32()
@@ -142,25 +193,49 @@ class RadioCommNode(Node):
         """Store latest status update from the boat system"""
         self.latest_status = msg.data
     
-    def send_status_update_simple(self):
-        """Send a simple status update message to the remote station"""
+    def send_periodic_status(self):
+        """Send periodic status updates to remote terminal"""
+        self.send_status_update()
+    
+    def send_status_update(self):
+        """Send status update using plain text format"""
         if not self.serial_conn:
             return
             
         try:
-            # For now, just send a simple text message
-            status_text = "Status update complete"
+            # Send GPS data in simple text format
+            # Format: GPS,lat,lon,speed,fix_quality
+            gps_message = f"GPS,{self.latest_gps['latitude']:.6f},{self.latest_gps['longitude']:.6f},{self.latest_gps['speed']:.2f},{self.latest_gps['fix_quality']}\n"
+            self.serial_conn.write(gps_message.encode('utf-8'))
+            self.get_logger().info(f"Sent GPS data: {gps_message.strip()}")
             
-            # Calculate length of data
-            data_length = len(status_text)
-            
-            # Send header (0xD0), length, and data
-            header = bytearray([0xD0, data_length])
-            self.serial_conn.write(header)
-            self.serial_conn.write(status_text.encode('utf-8'))
-            
-            # Log status update
-            self.get_logger().info(f'Sent simple status update')
+            # Try to extract essential boat status data
+            try:
+                boat_status = json.loads(self.latest_status)
+                
+                # Send boat status in simple text format
+                # Format: STATUS,control_mode,event_type,wind_direction
+                control_mode = boat_status.get("control_mode", "unknown")
+                event_type = boat_status.get("event_type", "unknown")
+                wind_direction = boat_status.get("wind_direction", 0.0)
+                
+                status_message = f"STATUS,{control_mode},{event_type},{wind_direction:.1f}\n"
+                self.serial_conn.write(status_message.encode('utf-8'))
+                self.get_logger().info(f"Sent boat status: {status_message.strip()}")
+                
+                # Send waypoint info if available
+                if "current_waypoint" in boat_status and boat_status["current_waypoint"]:
+                    try:
+                        waypoint = boat_status["current_waypoint"]
+                        # Format: WAYPOINT,number,completed
+                        waypoint_message = f"WAYPOINT,{waypoint},{boat_status.get('total_waypoints', 0)},{boat_status.get('last_completed_waypoint', 0)}\n"
+                        self.serial_conn.write(waypoint_message.encode('utf-8'))
+                        self.get_logger().info(f"Sent waypoint info: {waypoint_message.strip()}")
+                    except Exception:
+                        self.get_logger().warning("Error formatting waypoint data")
+                
+            except json.JSONDecodeError:
+                self.get_logger().warning('Could not parse boat status JSON, sending only GPS data')
                 
         except Exception as e:
             self.get_logger().error(f'Error sending status update: {e}')
