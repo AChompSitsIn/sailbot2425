@@ -230,6 +230,9 @@ class PayloadControl(EventControl):
 
 class DeveloperControl(EventControl):
     def handle_autonomous(self):
+
+        print("autonomous navigtion enabled in developer mode control type")
+        
         """developer testing autonomous control"""
         current_pos = self.get_current_position()
         wind_dir = self.get_wind_direction()
