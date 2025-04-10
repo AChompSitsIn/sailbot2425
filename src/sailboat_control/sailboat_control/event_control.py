@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from .boat import ControlMode
+from .common import ControlMode
 from path_planning.path_planning.waypoint import Waypoint
 from path_planning.path_planning.leg import Leg
 from typing import List, Optional, Tuple

@@ -18,13 +18,6 @@ class StateManagementNode(Node):
             10
         )
         
-        # Add status publisher for radio communication
-        self.status_publisher = self.create_publisher(
-            String,
-            'boat_status',
-            10
-        )
-        
         # Create the boat instance and pass the node for sensor access
         self.boat = Boat("developer_mode", self)
         self.boat.start_event()
@@ -38,9 +31,6 @@ class StateManagementNode(Node):
             4: self._handle_emergency_stop
         }
         
-        # Add timer for regular status updates
-        self.status_timer = self.create_timer(1.0, self.publish_status)
-        
         self.get_logger().info("State management node initialized")
     
     def radio_callback(self, msg: Int32):
@@ -51,8 +41,6 @@ class StateManagementNode(Node):
         if handler:
             handler()
             self._log_state_change()
-            # Publish status immediately after a change
-            self.publish_status()
         else:
             self.get_logger().warn(f"Unknown command received: {command}")
     

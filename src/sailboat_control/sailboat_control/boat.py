@@ -2,13 +2,9 @@ from enum import Enum
 from typing import List, Optional
 from rclpy.node import Node
 from path_planning.path_planning.waypoint import Waypoint
+from .common import ControlMode  # Changed from local definition
 from .events import F, Pr, S, E, P, D
 from .event_control import create_event_control
-
-class ControlMode(Enum):
-    RC = "rc"                    
-    AUTONOMOUS = "autonomous"     
-    RC_INTERRUPT = "rc_interrupt" 
 
 class BoatState:
     def __init__(self):
