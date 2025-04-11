@@ -11,7 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
     ],
-    install_requires=['setuptools', 'pyserial'],
+    install_requires=['setuptools', 'pyserial', 'smbus2'],
     zip_safe=True,
     maintainer='your_name',
     maintainer_email='your_email@example.com',
@@ -22,7 +22,7 @@ setup(
         'console_scripts': [
             'radio_comm = sensors.radio_comm_node:main',
             'gps = sensors.gps:main',
-            'dummy_wind = sensors.wind:main',
+            'arduino_interface = sensors.arduino_interface:main',
         ],
     },
 )

@@ -51,7 +51,7 @@ start_node() {
 
 # Launch the nodes in sequence
 start_node sensors gps
-start_node sensors dummy_wind
+start_node sensors arduino_interface  # Use Arduino interface instead of dummy_wind
 start_node sensors radio_comm
 start_node sailboat_control state_management
 

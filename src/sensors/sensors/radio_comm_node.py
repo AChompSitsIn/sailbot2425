@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32, String, Float64
+from std_msgs.msg import Int32, String, Float32, Float64
 from sensor_msgs.msg import NavSatFix
 import serial
 import struct
@@ -66,6 +66,14 @@ class RadioCommNode(Node):
             10
         )
         
+        # Subscribe to wind direction
+        self.wind_subscription = self.create_subscription(
+            Float32,
+            'wind/direction',
+            self.wind_callback,
+            10
+        )
+        
         # Initialize serial connection
         try:
             self.serial_conn = serial.Serial(
@@ -90,6 +98,7 @@ class RadioCommNode(Node):
             "speed": 0.0,
             "timestamp": 0
         }
+        self.latest_wind_direction = 0.0
         
         # Create thread for receiving commands
         self.running = True
@@ -131,6 +140,11 @@ class RadioCommNode(Node):
     def fix_quality_callback(self, msg: Int32):
         """Store latest GPS fix quality data"""
         self.latest_gps["fix_quality"] = msg.data
+    
+    def wind_callback(self, msg: Float32):
+        """Store latest wind direction data"""
+        self.latest_wind_direction = msg.data
+        self.get_logger().debug(f"Received wind direction: {msg.data:.1f}°")
     
     def receive_commands(self):
         """Background thread to receive commands from the radio"""
@@ -209,6 +223,12 @@ class RadioCommNode(Node):
             self.serial_conn.write(gps_message.encode('utf-8'))
             self.get_logger().info(f"Sent GPS data: {gps_message.strip()}")
             
+            # Send wind direction data
+            # Format: WIND,direction
+            wind_message = f"WIND,{self.latest_wind_direction:.1f}\n"
+            self.serial_conn.write(wind_message.encode('utf-8'))
+            self.get_logger().info(f"Sent wind data: {wind_message.strip()}")
+            
             # Try to extract essential boat status data
             try:
                 boat_status = json.loads(self.latest_status)
@@ -217,9 +237,8 @@ class RadioCommNode(Node):
                 # Format: STATUS,control_mode,event_type,wind_direction
                 control_mode = boat_status.get("control_mode", "unknown")
                 event_type = boat_status.get("event_type", "unknown")
-                wind_direction = boat_status.get("wind_direction", 0.0)
                 
-                status_message = f"STATUS,{control_mode},{event_type},{wind_direction:.1f}\n"
+                status_message = f"STATUS,{control_mode},{event_type}\n"
                 self.serial_conn.write(status_message.encode('utf-8'))
                 self.get_logger().info(f"Sent boat status: {status_message.strip()}")
                 
@@ -235,7 +254,7 @@ class RadioCommNode(Node):
                         self.get_logger().warning("Error formatting waypoint data")
                 
             except json.JSONDecodeError:
-                self.get_logger().warning('Could not parse boat status JSON, sending only GPS data')
+                self.get_logger().warning('Could not parse boat status JSON, sending only GPS and wind data')
                 
         except Exception as e:
             self.get_logger().error(f'Error sending status update: {e}')
