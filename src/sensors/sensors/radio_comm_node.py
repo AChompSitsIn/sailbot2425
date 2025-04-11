@@ -13,7 +13,7 @@ class RadioCommNode(Node):
     """
     ROS Node for radio communication between the sailbot and a remote control station.
     Receives commands from the remote station and publishes them to the 'radio_commands' topic.
-    Sends status updates back to the remote station when requested.
+    Sends status updates back to the remote station when requested, using simple text format.
     """
     def __init__(self):
         super().__init__('radio_comm_node')
@@ -90,7 +90,6 @@ class RadioCommNode(Node):
             self.serial_conn = None
         
         # Initialize sensor data storage
-        self.latest_status = "{}"
         self.latest_gps = {
             "latitude": 0.0,
             "longitude": 0.0,
@@ -99,6 +98,13 @@ class RadioCommNode(Node):
             "timestamp": 0
         }
         self.latest_wind_direction = 0.0
+        
+        # Status information - stored in simple format
+        self.control_mode = "rc"
+        self.event_type = "developer_mode"
+        self.current_waypoint = None
+        self.total_waypoints = 0
+        self.last_completed_waypoint = None
         
         # Create thread for receiving commands
         self.running = True
@@ -204,8 +210,35 @@ class RadioCommNode(Node):
                 time.sleep(0.1)
     
     def status_callback(self, msg):
-        """Store latest status update from the boat system"""
-        self.latest_status = msg.data
+        """Process status update from the boat system"""
+        try:
+            # Parse the JSON status
+            status_data = json.loads(msg.data)
+            
+            # Extract the values we need in simple format
+            self.control_mode = status_data.get("control_mode", "rc")
+            self.event_type = status_data.get("event_type", "developer_mode")
+            
+            # Handle waypoint information
+            if "current_waypoint" in status_data and status_data["current_waypoint"]:
+                self.current_waypoint = status_data["current_waypoint"]
+            
+            if "last_completed_waypoint" in status_data and status_data["last_completed_waypoint"]:
+                self.last_completed_waypoint = status_data["last_completed_waypoint"]
+            
+            self.total_waypoints = status_data.get("total_waypoints", 0)
+            
+            # Log that we received a status update
+            self.get_logger().info(
+                f"Received status update - mode: {self.control_mode}, "
+                f"event: {self.event_type}"
+            )
+            
+            # Send a status update when mode changes
+            self.send_status_update()
+            
+        except json.JSONDecodeError as e:
+            self.get_logger().error(f"Failed to parse status JSON: {e}")
     
     def send_periodic_status(self):
         """Send periodic status updates to remote terminal"""
@@ -229,32 +262,32 @@ class RadioCommNode(Node):
             self.serial_conn.write(wind_message.encode('utf-8'))
             self.get_logger().info(f"Sent wind data: {wind_message.strip()}")
             
-            # Try to extract essential boat status data
-            try:
-                boat_status = json.loads(self.latest_status)
-                
-                # Send boat status in simple text format
-                # Format: STATUS,control_mode,event_type,wind_direction
-                control_mode = boat_status.get("control_mode", "unknown")
-                event_type = boat_status.get("event_type", "unknown")
-                
-                status_message = f"STATUS,{control_mode},{event_type}\n"
-                self.serial_conn.write(status_message.encode('utf-8'))
-                self.get_logger().info(f"Sent boat status: {status_message.strip()}")
-                
-                # Send waypoint info if available
-                if "current_waypoint" in boat_status and boat_status["current_waypoint"]:
-                    try:
-                        waypoint = boat_status["current_waypoint"]
-                        # Format: WAYPOINT,number,completed
-                        waypoint_message = f"WAYPOINT,{waypoint},{boat_status.get('total_waypoints', 0)},{boat_status.get('last_completed_waypoint', 0)}\n"
-                        self.serial_conn.write(waypoint_message.encode('utf-8'))
-                        self.get_logger().info(f"Sent waypoint info: {waypoint_message.strip()}")
-                    except Exception:
-                        self.get_logger().warning("Error formatting waypoint data")
-                
-            except json.JSONDecodeError:
-                self.get_logger().warning('Could not parse boat status JSON, sending only GPS and wind data')
+            # Send boat status with actual control mode and event type
+            # Format: STATUS,control_mode,event_type
+            status_message = f"STATUS,{self.control_mode},{self.event_type}\n"
+            self.serial_conn.write(status_message.encode('utf-8'))
+            self.get_logger().info(f"Sent boat status: {status_message.strip()}")
+            
+            # Send waypoint info if available
+            if self.current_waypoint:
+                try:
+                    current_wp_info = None
+                    if isinstance(self.current_waypoint, dict):
+                        # If current_waypoint is already a dict
+                        current_wp_info = str(self.current_waypoint.get("lat", 0)) + "," + str(self.current_waypoint.get("long", 0))
+                    else:
+                        # If it's something else (assuming it's an object with lat/long attributes)
+                        try:
+                            current_wp_info = str(getattr(self.current_waypoint, "lat", 0)) + "," + str(getattr(self.current_waypoint, "long", 0))
+                        except:
+                            current_wp_info = "unknown"
+                    
+                    # Format: WAYPOINT,info,total
+                    waypoint_message = f"WAYPOINT,{current_wp_info},{self.total_waypoints}\n"
+                    self.serial_conn.write(waypoint_message.encode('utf-8'))
+                    self.get_logger().info(f"Sent waypoint info: {waypoint_message.strip()}")
+                except Exception as e:
+                    self.get_logger().warning(f"Error formatting waypoint data: {e}")
                 
         except Exception as e:
             self.get_logger().error(f'Error sending status update: {e}')
