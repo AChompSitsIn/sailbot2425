@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 import csv
-from geometry_utils import Angle, Vector
+from .geometry_utils import Angle, Vector
 
 class PolarData:
     """manages boat performance data from polar diagram

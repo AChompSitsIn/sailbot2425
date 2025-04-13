@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from .boat import ControlMode
+from .common import ControlMode
 from path_planning.path_planning.waypoint import Waypoint
 from path_planning.path_planning.leg import Leg
 from typing import List, Optional, Tuple
@@ -230,6 +230,9 @@ class PayloadControl(EventControl):
 
 class DeveloperControl(EventControl):
     def handle_autonomous(self):
+
+        print("autonomous navigtion enabled in developer mode control type")
+        
         """developer testing autonomous control"""
         current_pos = self.get_current_position()
         wind_dir = self.get_wind_direction()

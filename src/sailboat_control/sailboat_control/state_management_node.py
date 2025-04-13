@@ -18,7 +18,7 @@ class StateManagementNode(Node):
             10
         )
         
-        # Add status publisher for radio communication
+        # Add status publisher for boat status
         self.status_publisher = self.create_publisher(
             String,
             'boat_status',
@@ -38,8 +38,11 @@ class StateManagementNode(Node):
             4: self._handle_emergency_stop
         }
         
-        # Add timer for regular status updates
-        self.status_timer = self.create_timer(1.0, self.publish_status)
+        # Publish initial status
+        self.publish_status()
+        
+        # Create a timer to periodically publish status (every 5 seconds)
+        self.create_timer(5.0, self.publish_status)
         
         self.get_logger().info("State management node initialized")
     
@@ -51,7 +54,7 @@ class StateManagementNode(Node):
         if handler:
             handler()
             self._log_state_change()
-            # Publish status immediately after a change
+            # Publish status update immediately after state change
             self.publish_status()
         else:
             self.get_logger().warn(f"Unknown command received: {command}")
@@ -130,9 +133,8 @@ class StateManagementNode(Node):
         msg.data = status_json
         self.status_publisher.publish(msg)
         
-        # Log less frequently to avoid spamming
-        if self.get_clock().now().nanoseconds % (10 * 10**9) < 10**9:  # roughly every 10 seconds
-            self.get_logger().debug(f"Published status update")
+        # Log status update
+        self.get_logger().debug(f"Published status update: {status_json}")
 
 def main(args=None):
     rclpy.init(args=args)

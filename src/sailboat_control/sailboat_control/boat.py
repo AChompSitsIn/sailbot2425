@@ -2,13 +2,9 @@ from enum import Enum
 from typing import List, Optional
 from rclpy.node import Node
 from path_planning.path_planning.waypoint import Waypoint
+from .common import ControlMode  # Changed from local definition
 from .events import F, Pr, S, E, P, D
 from .event_control import create_event_control
-
-class ControlMode(Enum):
-    RC = "rc"                    
-    AUTONOMOUS = "autonomous"     
-    RC_INTERRUPT = "rc_interrupt" 
 
 class BoatState:
     def __init__(self):
@@ -67,6 +63,8 @@ class Boat:
             return
 
         self.state.control_mode = ControlMode.AUTONOMOUS
+        # Log the change
+        self.node.get_logger().info(f"Autonomous mode started for {self.event_type}")
 
     def handle_rc_interrupt(self) -> Optional[Waypoint]:
         """handle RC interrupt for autonomous events"""
@@ -75,6 +73,8 @@ class Boat:
             
         if self.state.control_mode != ControlMode.RC_INTERRUPT:
             self.state.control_mode = ControlMode.RC_INTERRUPT
+            # Log the change
+            self.node.get_logger().info("RC interrupt activated")
             return self.state.last_completed_waypoint
         return None
 
@@ -85,15 +85,35 @@ class Boat:
             
         if self.state.control_mode == ControlMode.RC_INTERRUPT:
             self.state.control_mode = ControlMode.AUTONOMOUS
+            # Log the change
+            self.node.get_logger().info("Autonomous control resumed")
 
     def get_system_status(self) -> dict:
         """get current system status"""
+        waypoint_data = None
+        if self.state.current_waypoint:
+            waypoint_data = {
+                "lat": self.state.current_waypoint.lat,
+                "long": self.state.current_waypoint.long,
+                "marked": self.state.current_waypoint.marked,
+                "n_passed": self.state.current_waypoint.n_passed
+            }
+            
+        last_waypoint_data = None
+        if self.state.last_completed_waypoint:
+            last_waypoint_data = {
+                "lat": self.state.last_completed_waypoint.lat,
+                "long": self.state.last_completed_waypoint.long,
+                "marked": self.state.last_completed_waypoint.marked,
+                "n_passed": self.state.last_completed_waypoint.n_passed
+            }
+            
         return {
             "event_type": self.event_type,
             "control_mode": self.state.control_mode.value,
             "autonomous_enabled": self.state.autonomous_enabled,
             "event_active": self.state.is_event_active,
-            "current_waypoint": self.state.current_waypoint,
-            "last_completed_waypoint": self.state.last_completed_waypoint,
+            "current_waypoint": waypoint_data,
+            "last_completed_waypoint": last_waypoint_data,
             "total_waypoints": len(self.waypoints)
         }
