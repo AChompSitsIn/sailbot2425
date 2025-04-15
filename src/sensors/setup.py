@@ -23,6 +23,7 @@ setup(
             'radio_comm = sensors.radio_comm_node:main',
             'gps = sensors.gps:main',
             'arduino_interface = sensors.arduino_interface:main',
+            'rudder_control = sensors.rudder_control_node:main',
         ],
     },
 )
