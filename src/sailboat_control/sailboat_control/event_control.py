@@ -8,6 +8,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Float32, Float64, String
 from .buoy_detection import BuoyDetector
+from std_msgs.msg import String, Int32
+import json
 
 class EventControl(ABC):
     """base class for event control"""
@@ -29,6 +31,19 @@ class EventControl(ABC):
         
         # set up subscriptions
         self._setup_subscriptions()
+
+        # publishers for navigation system
+        self.waypoint_publisher = node.create_publisher(
+            String,
+            'navigation/target',
+            10
+        )
+        
+        self.nav_command_publisher = node.create_publisher(
+            Int32,
+            'navigation/command',
+            10
+        )
     
     def _setup_subscriptions(self):
         """setup gps and wind sensor subscriptions"""
@@ -171,7 +186,41 @@ class EventControl(ABC):
         # implement standard rc control logic here
         pass
 
-# Rest of the class implementations remain the same
+    def enable_autonomous_navigation(self):
+    """Enable autonomous navigation"""
+    msg = Int32()
+    msg.data = 1  # 1 = enable
+    self.nav_command_publisher.publish(msg)
+    self.node.get_logger().info("Enabled autonomous navigation")
+    
+    def disable_autonomous_navigation(self):
+        """Disable autonomous navigation"""
+        msg = Int32()
+        msg.data = 0  # 0 = disable
+        self.nav_command_publisher.publish(msg)
+        self.node.get_logger().info("Disabled autonomous navigation")
+        
+    def send_waypoint(self, waypoint: Waypoint):
+        """Send waypoint to navigation system"""
+        # Create JSON waypoint data
+        waypoint_data = {
+            'lat': waypoint.lat,
+            'lon': waypoint.long
+        }
+        
+        # Convert to JSON string
+        waypoint_json = json.dumps(waypoint_data)
+        
+        # Create and publish message
+        msg = String()
+        msg.data = waypoint_json
+        self.waypoint_publisher.publish(msg)
+        
+        self.node.get_logger().info(
+            f"Sent waypoint to navigation: lat={waypoint.lat}, lon={waypoint.long}"
+        )
+
+
 class FleetRaceControl(EventControl):
     """pure rc control - no autonomous capability"""
     pass  # only uses the base rc control
@@ -230,19 +279,18 @@ class PayloadControl(EventControl):
 
 class DeveloperControl(EventControl):
     def handle_autonomous(self):
-
-        print("autonomous navigtion enabled in developer mode control type")
-        
         """developer testing autonomous control"""
-        current_pos = self.get_current_position()
-        wind_dir = self.get_wind_direction()
-        speed = self.get_current_speed()
-        
-        # get next waypoint based on most recently passed buoy
+        # Get next waypoint
         next_waypoint = self.get_next_waypoint()
+        
         if next_waypoint:
-            # implement developer testing autonomous behavior
-            pass
+            # Enable autonomous navigation
+            self.enable_autonomous_navigation()
+            
+            # Send waypoint to navigation system
+            self.send_waypoint(next_waypoint)
+        else:
+            self.node.get_logger().warning("No waypoint available for navigation")
 
 def create_event_control(event_type: str, waypoints: List[Waypoint], node: Node) -> EventControl:
     """factory function to create appropriate event control"""
