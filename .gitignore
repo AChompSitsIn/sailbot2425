@@ -1,0 +1,6 @@
+# ROS build and log files
+build/
+install/
+log/
+.vscode/
+stuff/
