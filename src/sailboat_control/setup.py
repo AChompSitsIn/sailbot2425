@@ -23,7 +23,7 @@ setup(
             'state_management = sailboat_control.state_management_node:main',
             'mock_radio = sailboat_control.mock_radio_node:main',
             'debug = sailboat_control.debug_node:main',
-            'navigation = sailboat_control.navigation_node:main', 
+            'navigation = sailboat_control.navigation_node:main',
+            'test_control = sailboat_control.test_control_node:main',  # Add this line
         ],
     },
-)

@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # Script to build and launch all Sailbot ROS nodes
 # Place this in your sailbot_ws directory and make it executable:
 # chmod +x start_sailbot.sh
@@ -43,7 +42,7 @@ declare -a pids
 
 # Function to start a node
 start_node() {
-    echo -e "${GREEN}Starting $1...${NC}"
+    echo -e "${GREEN}Starting $1 $2...${NC}"
     ros2 run $1 $2 &
     pids+=($!)
     sleep 2  # Give the node time to initialize
@@ -51,8 +50,11 @@ start_node() {
 
 # Launch the nodes in sequence
 start_node sensors gps
-start_node sensors arduino_interface  # Use Arduino interface instead of dummy_wind
+start_node sensors rudder_control
+start_node sensors winch_control
+start_node sensors wind_sensor
 start_node sensors radio_comm
+start_node sailboat_control navigation
 start_node sailboat_control state_management
 
 echo -e "${GREEN}All nodes started!${NC}"
