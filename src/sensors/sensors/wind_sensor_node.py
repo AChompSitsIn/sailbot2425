@@ -39,7 +39,7 @@ class WindSensorNode(Node):
         # Initialize publishers
         self.wind_publisher = self.create_publisher(
             Float32,
-            'wind/direction',
+            'wind/raw_direction',
             10
         )
         
@@ -84,7 +84,7 @@ class WindSensorNode(Node):
             msg.data = float(self.wind_direction)
             self.wind_publisher.publish(msg)
             
-            self.get_logger().debug(f"Published wind direction: {self.wind_direction:.1f}°")
+            self.get_logger().debug(f"Published raw wind direction: {self.wind_direction:.1f}°")
 
 def main(args=None):
     rclpy.init(args=args)

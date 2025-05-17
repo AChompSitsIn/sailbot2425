@@ -25,6 +25,7 @@ setup(
             'rudder_control = sensors.rudder_control_node:main',
             'winch_control = sensors.winch_control_node:main',
             'wind_sensor = sensors.wind_sensor_node:main',
+            'wind_smoother = sensors.wind_smoother:main',
         ],
     },
 )
