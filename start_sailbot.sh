@@ -1,7 +1,5 @@
 #!/bin/bash
-# Script to build and launch all Sailbot ROS nodes
-# Place this in your sailbot_ws directory and make it executable:
-# chmod +x start_sailbot.sh
+# Script to build and launch all Sailbot ROS nodes for ROS2 Jazzy on Ubuntu 24.04
 
 # Define colors for output
 GREEN='\033[0;32m'
@@ -20,7 +18,25 @@ echo -e "${GREEN}Workspace directory: $(pwd)${NC}"
 
 # Source ROS
 echo -e "${YELLOW}Sourcing ROS...${NC}"
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
+
+# Check for dependencies
+echo -e "${YELLOW}Checking dependencies...${NC}"
+missing_deps=false
+
+# Check for necessary Python packages
+for pkg in python3-serial python3-smbus i2c-tools; do
+    if ! dpkg -l | grep -q "$pkg"; then
+        echo -e "${RED}Missing dependency: $pkg${NC}"
+        missing_deps=true
+    fi
+done
+
+if [ "$missing_deps" = true ]; then
+    echo -e "${RED}Please install missing dependencies:${NC}"
+    echo -e "sudo apt update && sudo apt install -y python3-serial python3-smbus i2c-tools"
+    exit 1
+fi
 
 # Build the packages
 echo -e "${YELLOW}Building packages...${NC}"

@@ -12,7 +12,7 @@ import sys
 
 # Configuration - CHANGE THESE VALUES based on your scanner results
 BUS_NUM = 1  # The I2C bus number where your Arduino is connected
-ARDUINO_ADDR = 0x08  # The I2C address of your Arduino (0x08 or 0x09)
+ARDUINO_ADDR = 0x09  # The I2C address of your Arduino (0x08 or 0x09)
 DECIMAL_CMD = 2  # Command byte that tells Arduino we're sending a float
 
 def send_float(bus, addr, cmd, value):
@@ -34,6 +34,7 @@ def send_float(bus, addr, cmd, value):
     try:
         # Send command followed by the float bytes
         bus.write_i2c_block_data(addr, cmd, data)
+        time.sleep(1)
         print(f"Sent float: {value:.2f} to Arduino at 0x{addr:02X}")
         return True
     except Exception as e:
@@ -48,7 +49,7 @@ def main():
     try:
         # Open the I2C bus
         bus = smbus.SMBus(BUS_NUM)
-        
+        time.sleep(1)        
         # Initial value
         value = 0.0
         
@@ -74,6 +75,7 @@ def main():
         print(f"Error: {e}")
     finally:
         try:
+            time.sleep(1)
             bus.close()
         except:
             pass

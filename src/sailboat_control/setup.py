@@ -27,3 +27,4 @@ setup(
             'test_control = sailboat_control.test_control_node:main',  # Add this line
         ],
     },
+)
