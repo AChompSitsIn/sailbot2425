@@ -19,7 +19,7 @@ class RadioCommNode(Node):
         super().__init__('radio_comm_node')
         
         # Parameters for serial connection
-        self.declare_parameter('port', '/dev/ttyUSB0')
+        self.declare_parameter('port', '/dev/ttyRADIO')
         self.declare_parameter('baud_rate', 57600)
         self.declare_parameter('status_interval', 5.0)  # Interval in seconds for auto status updates
         
@@ -74,21 +74,6 @@ class RadioCommNode(Node):
             10
         )
         
-        # Initialize serial connection
-        try:
-            self.serial_conn = serial.Serial(
-                port=self.port,
-                baudrate=self.baud_rate,
-                timeout=1.0
-            )
-            self.get_logger().info(f'Connected to radio on {self.port} at {self.baud_rate} baud')
-            
-            # Send initial connection message
-            self.send_initial_message()
-        except serial.SerialException as e:
-            self.get_logger().error(f'Failed to connect to radio: {e}')
-            self.serial_conn = None
-        
         # Initialize sensor data storage
         self.latest_gps = {
             "latitude": 0.0,
@@ -106,23 +91,48 @@ class RadioCommNode(Node):
         self.total_waypoints = 0
         self.last_completed_waypoint = None
         
-        # Create thread for receiving commands
+        # Serial connection will be None initially
+        self.serial_conn = None
+        
+        # Create thread for receiving commands with auto-reconnect
         self.running = True
-        self.receiver_thread = threading.Thread(target=self.receive_commands)
+        self.receiver_thread = threading.Thread(target=self.receive_commands_with_reconnect)
         self.receiver_thread.daemon = True
         self.receiver_thread.start()
-        
-        # Timer for periodic initial message sending
-        self.create_timer(5.0, self.send_initial_message)
         
         # Timer for periodic status updates
         self.create_timer(self.status_interval, self.send_periodic_status)
         
         self.get_logger().info('Radio Communication Node initialized')
     
+    def connect_serial(self):
+        """Connect to serial port with error handling"""
+        try:
+            if self.serial_conn and self.serial_conn.is_open:
+                self.serial_conn.close()
+                
+            self.serial_conn = serial.Serial(
+                port=self.port,
+                baudrate=self.baud_rate,
+                timeout=1.0,
+                rtscts=False,
+                dsrdtr=False,
+                xonxoff=False
+            )
+            self.get_logger().info(f'Connected to radio on {self.port} at {self.baud_rate} baud')
+            
+            # Send initial connection message
+            self.send_initial_message()
+            return True
+            
+        except (serial.SerialException, OSError) as e:
+            self.get_logger().error(f'Failed to connect to radio: {e}')
+            self.serial_conn = None
+            return False
+    
     def send_initial_message(self):
         """Send initial message to establish connection with the remote terminal"""
-        if not self.serial_conn:
+        if not self.serial_conn or not self.serial_conn.is_open:
             return
             
         try:
@@ -152,62 +162,83 @@ class RadioCommNode(Node):
         self.latest_wind_direction = msg.data
         self.get_logger().debug(f"Received wind direction: {msg.data:.1f}°")
     
-    def receive_commands(self):
-        """Background thread to receive commands from the radio"""
-        if not self.serial_conn:
-            self.get_logger().error('No serial connection available for receiving')
-            return
-        
-        buffer = bytearray()
-        
+    def receive_commands_with_reconnect(self):
+        """Background thread to receive commands with auto-reconnect"""
         while self.running:
             try:
-                # Check if data is available
-                if self.serial_conn.in_waiting > 0:
-                    # Read one byte
-                    buffer += self.serial_conn.read(1)
-                    
-                    # Check for command header (0xC0)
-                    if len(buffer) == 1 and buffer[0] != 0xC0:
-                        buffer = bytearray()
+                # Try to connect if not connected
+                if not self.serial_conn or not self.serial_conn.is_open:
+                    if not self.connect_serial():
+                        time.sleep(2)  # Wait before retry
                         continue
-                    
-                    # If we have at least 3 bytes (header + command byte + checksum)
-                    if len(buffer) >= 3:
-                        # Validate checksum (simple XOR)
-                        if buffer[1] ^ 0xFF == buffer[2]:
-                            # Extract command
-                            command = buffer[1]
-                            
-                            # Send immediate acknowledgment
-                            ack_msg = bytearray([0xA0, command, command ^ 0xFF])
-                            self.serial_conn.write(ack_msg)
-                            
-                            # Special handling for status request command (9)
-                            if command == 9:
-                                self.get_logger().info('Status update requested')
-                                self.send_status_update()
-                            else:
-                                # Process other commands
-                                msg = Int32()
-                                msg.data = command
-                                self.command_publisher.publish(msg)
-                                
-                                # Log received command
-                                self.get_logger().info(f'Received command: {command}')
-                        else:
-                            self.get_logger().warning('Invalid checksum in received command')
-                        
-                        # Reset buffer for next command
-                        buffer = bytearray()
-                else:
-                    # No data available, sleep briefly
-                    time.sleep(0.01)
-                    
-            except Exception as e:
-                self.get_logger().error(f'Error receiving command: {e}')
+                
+                # Main receive loop
                 buffer = bytearray()
-                time.sleep(0.1)
+                
+                while self.running and self.serial_conn and self.serial_conn.is_open:
+                    try:
+                        # Check if data is available
+                        if self.serial_conn.in_waiting > 0:
+                            # Read one byte
+                            buffer += self.serial_conn.read(1)
+                            
+                            # Check for command header (0xC0)
+                            if len(buffer) == 1 and buffer[0] != 0xC0:
+                                buffer = bytearray()
+                                continue
+                            
+                            # If we have at least 3 bytes (header + command byte + checksum)
+                            if len(buffer) >= 3:
+                                # Validate checksum (simple XOR)
+                                if buffer[1] ^ 0xFF == buffer[2]:
+                                    # Extract command
+                                    command = buffer[1]
+                                    
+                                    # Send immediate acknowledgment
+                                    ack_msg = bytearray([0xA0, command, command ^ 0xFF])
+                                    self.serial_conn.write(ack_msg)
+                                    
+                                    # Special handling for status request command (9)
+                                    if command == 9:
+                                        self.get_logger().info('Status update requested')
+                                        self.send_status_update()
+                                    else:
+                                        # Process other commands
+                                        msg = Int32()
+                                        msg.data = command
+                                        self.command_publisher.publish(msg)
+                                        
+                                        # Log received command
+                                        self.get_logger().info(f'Received command: {command}')
+                                else:
+                                    self.get_logger().warning('Invalid checksum in received command')
+                                
+                                # Reset buffer for next command
+                                buffer = bytearray()
+                        else:
+                            # No data available, sleep briefly
+                            time.sleep(0.01)
+                            
+                    except (serial.SerialException, OSError) as e:
+                        self.get_logger().error(f'[ERROR] Serial error in receive loop: {e}')
+                        # Break inner loop to reconnect
+                        break
+                        
+            except Exception as e:
+                self.get_logger().error(f'[ERROR] Unexpected error in receive thread: {e}')
+                time.sleep(2)  # Wait before retry
+    
+    def safe_serial_write(self, data):
+        """Safely write to serial with error handling"""
+        if not self.serial_conn or not self.serial_conn.is_open:
+            return False
+            
+        try:
+            self.serial_conn.write(data)
+            return True
+        except (serial.SerialException, OSError) as e:
+            self.get_logger().error(f'[ERROR] Serial write error: {e}')
+            return False
     
     def status_callback(self, msg):
         """Process status update from the boat system"""
@@ -246,27 +277,27 @@ class RadioCommNode(Node):
     
     def send_status_update(self):
         """Send status update using plain text format"""
-        if not self.serial_conn:
+        if not self.serial_conn or not self.serial_conn.is_open:
             return
             
         try:
             # Send GPS data in simple text format
             # Format: GPS,lat,lon,speed,fix_quality
             gps_message = f"GPS,{self.latest_gps['latitude']:.6f},{self.latest_gps['longitude']:.6f},{self.latest_gps['speed']:.2f},{self.latest_gps['fix_quality']}\n"
-            self.serial_conn.write(gps_message.encode('utf-8'))
-            self.get_logger().info(f"Sent GPS data: {gps_message.strip()}")
+            if self.safe_serial_write(gps_message.encode('utf-8')):
+                self.get_logger().info(f"Sent GPS data: {gps_message.strip()}")
             
             # Send wind direction data
             # Format: WIND,direction
             wind_message = f"WIND,{self.latest_wind_direction:.1f}\n"
-            self.serial_conn.write(wind_message.encode('utf-8'))
-            self.get_logger().info(f"Sent wind data: {wind_message.strip()}")
+            if self.safe_serial_write(wind_message.encode('utf-8')):
+                self.get_logger().info(f"Sent wind data: {wind_message.strip()}")
             
             # Send boat status with actual control mode and event type
             # Format: STATUS,control_mode,event_type
             status_message = f"STATUS,{self.control_mode},{self.event_type}\n"
-            self.serial_conn.write(status_message.encode('utf-8'))
-            self.get_logger().info(f"Sent boat status: {status_message.strip()}")
+            if self.safe_serial_write(status_message.encode('utf-8')):
+                self.get_logger().info(f"Sent boat status: {status_message.strip()}")
             
             # Send waypoint info if available
             if self.current_waypoint:
@@ -284,8 +315,8 @@ class RadioCommNode(Node):
                     
                     # Format: WAYPOINT,info,total
                     waypoint_message = f"WAYPOINT,{current_wp_info},{self.total_waypoints}\n"
-                    self.serial_conn.write(waypoint_message.encode('utf-8'))
-                    self.get_logger().info(f"Sent waypoint info: {waypoint_message.strip()}")
+                    if self.safe_serial_write(waypoint_message.encode('utf-8')):
+                        self.get_logger().info(f"Sent waypoint info: {waypoint_message.strip()}")
                 except Exception as e:
                     self.get_logger().warning(f"Error formatting waypoint data: {e}")
                 

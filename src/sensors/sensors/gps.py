@@ -21,7 +21,7 @@ class GPSNode(Node):
         super().__init__('gps_node')
         
         # Parameters
-        self.declare_parameter('port', '/dev/ttyTHS1')
+        self.declare_parameter('port', '/dev/ttyAMA0')
         self.declare_parameter('baud_rate', 38400)
         self.declare_parameter('update_rate', 1.0)
         
