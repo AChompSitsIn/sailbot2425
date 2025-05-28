@@ -69,7 +69,8 @@ class Leg:
                       end_point: Tuple[float, float],
                       wind_angle: float,  # Wind angle relative to boat
                       wind_speed: float,
-                      boat_heading: float) -> List[Tuple[float, float]]:
+                      boat_heading: float,
+                      first_maneuver_is_starboard: bool = True) -> List[Tuple[float, float]]:
         """
         calculate optimal path between points considering wind relative to boat
         
@@ -79,6 +80,8 @@ class Leg:
             wind_angle: wind angle relative to boat heading in degrees (0 = head-on)
             wind_speed: wind speed
             boat_heading: current boat heading in degrees (0 = North, clockwise)
+            first_maneuver_is_starboard: If True, the first tack/jibe will be on a starboard
+                                         maneuver. If False, it will be port. Defaults to True.
             
         returns:
             list of waypoints including any intermediate tacking/jibing points
@@ -118,12 +121,12 @@ class Leg:
         if upwind_sailing and abs(target_to_wind_angle) < self.polar_data.upwind_vmg:
             # We're trying to sail too close to the wind - need to tack
             return self._calculate_upwind_path(
-                start_point, end_point, normalized_wind, wind_speed, boat_heading)
+                start_point, end_point, normalized_wind, wind_speed, boat_heading, first_maneuver_is_starboard)
                 
         elif downwind_sailing and abs(target_to_wind_angle) > self.polar_data.downwind_vmg:
             # We're trying to sail directly downwind - need to jibe
             return self._calculate_downwind_path(
-                start_point, end_point, normalized_wind, wind_speed, boat_heading)
+                start_point, end_point, normalized_wind, wind_speed, boat_heading, first_maneuver_is_starboard)
                 
         else:
             # Direct path is possible - no need for tacking or jibing
@@ -133,30 +136,55 @@ class Leg:
                              end: Tuple[float, float],
                              wind: Angle,
                              wind_speed: float,
-                             boat_heading: float) -> List[Tuple[float, float]]:
-        """calculate tacking path for upwind sailing"""
+                             boat_heading: float,
+                             first_maneuver_is_starboard: bool) -> List[Tuple[float, float]]:
+        """calculate tacking path for upwind sailing
+        
+        Args:
+            first_maneuver_is_starboard: If True, the first tack will be starboard. Else, port.
+        """
         # Create vector from start to end
-        v = Vector(
+        v_target = Vector(
             Angle(1, math.degrees(math.atan2(end[1] - start[1], end[0] - start[0]))), 
             math.sqrt((end[0] - start[0])**2 + (end[1] - start[1])**2))
         
         # Calculate optimal tacking vectors using the polar data
         # Wind is already converted to global reference frame
-        k = Vector(wind + Angle(1, 180 + self.polar_data.upwind_vmg), 1)
-        j = Vector(wind + Angle(1, 180 - self.polar_data.upwind_vmg), 1)
+        # k_starboard: starboard tack vector (wind over boat's starboard/right side)
+        # j_port: port tack vector (wind over boat's port/left side)
+        k_starboard = Vector(wind + Angle(1, 180 + self.polar_data.upwind_vmg), 1) 
+        j_port = Vector(wind + Angle(1, 180 - self.polar_data.upwind_vmg), 1)
         
+        if first_maneuver_is_starboard:
+            leg1_vec = k_starboard
+            leg2_vec = j_port
+        else:
+            leg1_vec = j_port
+            leg2_vec = k_starboard
+            
         # Solve system of equations to find optimal tacking point
-        D = np.linalg.det([[k.xcomp(), j.xcomp()], [k.ycomp(), j.ycomp()]])
-        Dk = np.linalg.det([[v.xcomp(), j.xcomp()], [v.ycomp(), j.ycomp()]])
-        Dj = np.linalg.det([[k.xcomp(), v.xcomp()], [k.ycomp(), v.ycomp()]])
+        # v_target = scalar1 * leg1_vec + scalar2 * leg2_vec
+        D_det = np.linalg.det([[leg1_vec.xcomp(), leg2_vec.xcomp()], 
+                               [leg1_vec.ycomp(), leg2_vec.ycomp()]])
         
-        a = Dk/D  # distance along first tack
-        b = Dj/D  # distance along second tack
+        if abs(D_det) < 1e-9: # Avoid division by zero if vectors are collinear
+            # This shouldn't happen with valid VMG angles but as a fallback:
+            self.get_logger().warning("Collinear tacking vectors, defaulting to direct path.")
+            return [end]
+
+        D_scalar1 = np.linalg.det([[v_target.xcomp(), leg2_vec.xcomp()], 
+                                   [v_target.ycomp(), leg2_vec.ycomp()]])
+        # D_scalar2 = np.linalg.det([[leg1_vec.xcomp(), v_target.xcomp()], # Not strictly needed for tack point
+        #                            [leg1_vec.ycomp(), v_target.ycomp()]])
         
-        # Calculate intermediate tacking point
-        k.norm *= a
-        j.norm *= b
-        tack_point = (start[0] + k.xcomp(), start[1] + k.ycomp())
+        scalar1 = D_scalar1 / D_det
+        # scalar2 = D_scalar2 / D_det # Length along second leg
+        
+        # Calculate intermediate tacking point: start + leg1_vec * scalar1
+        tack_point_x = start[0] + leg1_vec.xcomp() * scalar1
+        tack_point_y = start[1] + leg1_vec.ycomp() * scalar1
+        
+        tack_point = (tack_point_x, tack_point_y)
         
         return [tack_point, end]
     
@@ -164,27 +192,52 @@ class Leg:
                                end: Tuple[float, float], 
                                wind: Angle,
                                wind_speed: float,
-                               boat_heading: float) -> List[Tuple[float, float]]:
-        """calculate jibing path for downwind sailing"""
+                               boat_heading: float,
+                               first_maneuver_is_starboard: bool) -> List[Tuple[float, float]]:
+        """calculate jibing path for downwind sailing
+        
+        Args:
+            first_maneuver_is_starboard: If True, the first jibe will be starboard. Else, port.
+        """
         # Similar to upwind but using downwind vmg angles
-        v = Vector(
+        v_target = Vector(
             Angle(1, math.degrees(math.atan2(end[1] - start[1], end[0] - start[0]))), 
             math.sqrt((end[0] - start[0])**2 + (end[1] - start[1])**2))
         
         # Wind is already converted to global reference frame
-        k = Vector(wind + Angle(1, 180 + self.polar_data.downwind_vmg), 1)
-        j = Vector(wind + Angle(1, 180 - self.polar_data.downwind_vmg), 1)
+        # k_starboard: starboard jibe vector (wind over boat's starboard/right quarter)
+        # j_port: port jibe vector (wind over boat's port/left quarter)
+        k_starboard = Vector(wind + Angle(1, 180 + self.polar_data.downwind_vmg), 1)
+        j_port = Vector(wind + Angle(1, 180 - self.polar_data.downwind_vmg), 1)
         
+        if first_maneuver_is_starboard:
+            leg1_vec = k_starboard
+            leg2_vec = j_port
+        else:
+            leg1_vec = j_port
+            leg2_vec = k_starboard
+
         # Solve system of equations for optimal jibing point
-        D = np.linalg.det([[k.xcomp(), j.xcomp()], [k.ycomp(), j.ycomp()]])
-        Dk = np.linalg.det([[v.xcomp(), j.xcomp()],[v.ycomp(), j.ycomp()]])
-        Dj = np.linalg.det([[k.xcomp(), v.xcomp()], [k.ycomp(), v.ycomp()]])
+        # v_target = scalar1 * leg1_vec + scalar2 * leg2_vec
+        D_det = np.linalg.det([[leg1_vec.xcomp(), leg2_vec.xcomp()], 
+                               [leg1_vec.ycomp(), leg2_vec.ycomp()]])
+
+        if abs(D_det) < 1e-9: # Avoid division by zero if vectors are collinear
+            self.get_logger().warning("Collinear jibing vectors, defaulting to direct path.")
+            return [end]
+            
+        D_scalar1 = np.linalg.det([[v_target.xcomp(), leg2_vec.xcomp()],
+                                   [v_target.ycomp(), leg2_vec.ycomp()]])
+        # D_scalar2 = np.linalg.det([[leg1_vec.xcomp(), v_target.xcomp()], # Not strictly needed
+        #                            [leg1_vec.ycomp(), v_target.ycomp()]])
         
-        a = Dk/D
-        b = Dj/D
+        scalar1 = D_scalar1 / D_det
+        # scalar2 = D_scalar2 / D_det
         
-        k.norm *= a
-        j.norm *= b
-        jibe_point = (start[0] + k.xcomp(), start[1] + k.ycomp())
+        # Calculate intermediate jibing point: start + leg1_vec * scalar1
+        jibe_point_x = start[0] + leg1_vec.xcomp() * scalar1
+        jibe_point_y = start[1] + leg1_vec.ycomp() * scalar1
+        
+        jibe_point = (jibe_point_x, jibe_point_y)
         
         return [jibe_point, end]

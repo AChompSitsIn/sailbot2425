@@ -9,7 +9,7 @@ class StateManagementNode(Node):
     def __init__(self):
         """initialize the state management ROS node"""
         super().__init__('state_management_node')
-        
+
         # Radio command subscription
         self.radio_subscriber = self.create_subscription(
             Int32,
@@ -17,18 +17,18 @@ class StateManagementNode(Node):
             self.radio_callback,
             10
         )
-        
+
         # Add status publisher for boat status
         self.status_publisher = self.create_publisher(
             String,
             'boat_status',
             10
         )
-        
+
         # Create the boat instance and pass the node for sensor access
         self.boat = Boat("developer_mode", self)
         self.boat.start_event()
-        
+
         # Command handler mapping
         self.command_handlers = {
             0: self._handle_rc_control,
@@ -37,20 +37,20 @@ class StateManagementNode(Node):
             3: self._handle_resume_autonomous,
             4: self._handle_emergency_stop
         }
-        
+
         # Publish initial status
         self.publish_status()
-        
+
         # Create a timer to periodically publish status (every 5 seconds)
         self.create_timer(5.0, self.publish_status)
-        
+
         self.get_logger().info("State management node initialized")
-    
+
     def radio_callback(self, msg: Int32):
         """handle incoming radio commands"""
         command = msg.data
         handler = self.command_handlers.get(command)
-        
+
         if handler:
             handler()
             self._log_state_change()
@@ -58,7 +58,7 @@ class StateManagementNode(Node):
             self.publish_status()
         else:
             self.get_logger().warn(f"Unknown command received: {command}")
-    
+
     def _handle_rc_control(self):
         """handle RC control command"""
         self.boat.state.control_mode = ControlMode.RC
@@ -83,6 +83,7 @@ class StateManagementNode(Node):
         # Switch to RC control during interrupt
         if hasattr(self.boat, 'event_control') and self.boat.event_control:
             self.boat.event_control.handle_rc()
+            self.boat.event_control.disable_autonomous_navigation() # should enable rc flag (no nav node control)
 
     def _handle_resume_autonomous(self):
         """handle resume autonomous command"""
@@ -100,7 +101,7 @@ class StateManagementNode(Node):
         # Force RC control
         if hasattr(self.boat, 'event_control') and self.boat.event_control:
             self.boat.event_control.handle_rc()
-    
+
     def _log_state_change(self):
         """Log current state after changes"""
         status = self.boat.get_system_status()
@@ -109,11 +110,11 @@ class StateManagementNode(Node):
             f"event: {status['event_type']}, "
             f"autonomous enabled: {status['autonomous_enabled']}"
         )
-    
+
     def publish_status(self):
         """Publish boat status for radio communication"""
         status = self.boat.get_system_status()
-        
+
         # Add GPS and wind data if available
         if hasattr(self.boat, 'event_control') and self.boat.event_control:
             try:
@@ -124,15 +125,15 @@ class StateManagementNode(Node):
             except AttributeError:
                 # Handle case where event_control doesn't have all methods
                 self.get_logger().debug("Some event_control methods not available")
-        
+
         # Convert to JSON string
         status_json = json.dumps(status)
-        
+
         # Create and publish message
         msg = String()
         msg.data = status_json
         self.status_publisher.publish(msg)
-        
+
         # Log status update
         self.get_logger().debug(f"Published status update: {status_json}")
 
