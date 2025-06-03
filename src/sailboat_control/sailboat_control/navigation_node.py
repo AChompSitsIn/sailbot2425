@@ -10,6 +10,33 @@ from path_planning.path_planning.leg import Leg
 from path_planning.path_planning.waypoint import Waypoint
 from typing import List, Tuple, Optional
 
+
+class PIDController:
+    """Simple PID controller for rudder control"""
+    def __init__(self, Kp, Ki, Kd):
+        self.Kp = Kp
+        self.Ki = Ki
+        self.Kd = Kd
+        self.integral = 0
+        self.last_error = None
+
+    def update(self, error, dt):
+        """Update PID controller with new error value"""
+        P = self.Kp * error
+        self.integral += error * dt
+        I = self.Ki * self.integral
+        D = 0
+        if self.last_error is not None:
+            D = self.Kd * (error - self.last_error) / dt
+        self.last_error = error
+        return P + I + D
+
+    def reset(self):
+        """Reset the PID controller state"""
+        self.integral = 0
+        self.last_error = None
+
+
 class NavigationNode(Node):
     """
     Dedicated ROS2 node for autonomous navigation of the sailboat.
@@ -29,22 +56,25 @@ class NavigationNode(Node):
         self.declare_parameter('rudder_update_rate', 1.0)  # Hz
         self.declare_parameter('sail_update_rate', 1.0)    # Hz
 
-        # Scale the time step constant based on the simulator's 70Hz rate
-        self.rudder_update_rate = self.get_parameter('rudder_update_rate').value
-        self.sail_update_rate = self.get_parameter('sail_update_rate').value
+        # PID parameters - these are from your friend's implementation
+        self.declare_parameter('rudder_kp', 70.0)
+        self.declare_parameter('rudder_ki', 0.5)
+        self.declare_parameter('rudder_kd', 35.0)
 
-        # Calculate scaled constant: 0.03 * 70 = 2.1
-        self.time_step_constant = 2.1  # This replaces the 0.03 constant at 70Hz
-
-        self.declare_parameter('rudder_noise', 2.0)         # scaling factor
-        self.declare_parameter('rudder_stability', 1.0)     # balance param
         self.declare_parameter('waypoint_threshold', 5.0)   # meters
 
         # Get parameter values
         self.rudder_update_rate = self.get_parameter('rudder_update_rate').value
-        self.rudder_noise = self.get_parameter('rudder_noise').value
-        self.rudder_stability = self.get_parameter('rudder_stability').value
+        self.sail_update_rate = self.get_parameter('sail_update_rate').value
         self.waypoint_threshold = self.get_parameter('waypoint_threshold').value
+
+        # Get PID parameters
+        kp = self.get_parameter('rudder_kp').value
+        ki = self.get_parameter('rudder_ki').value
+        kd = self.get_parameter('rudder_kd').value
+
+        # Initialize PID controller
+        self.rudder_pid = PIDController(Kp=kp, Ki=ki, Kd=kd)
 
         # Navigation state
         self.current_lat = 0.0
@@ -144,7 +174,7 @@ class NavigationNode(Node):
             10
         )
 
-        self.get_logger().info("Navigation node initialized with sail control")
+        self.get_logger().info("Navigation node initialized with PID controller")
 
     def gps_callback(self, msg: NavSatFix):
         """Handle GPS position updates and calculate heading directly from position changes"""
@@ -198,6 +228,7 @@ class NavigationNode(Node):
 
         if command == 1:  # Enable autonomous navigation
             self.navigation_enabled = True
+            self.rudder_pid.reset()  # Reset PID controller when starting autonomous mode
             self.get_logger().info("Autonomous navigation enabled")
         elif command == 0:  # Disable autonomous navigation
             self.navigation_enabled = False
@@ -217,6 +248,9 @@ class NavigationNode(Node):
 
             # Calculate path to this waypoint
             self.calculate_path((self.current_lat, self.current_lon), (lat, lon))
+
+            # Reset PID controller for new path
+            self.rudder_pid.reset()
 
         except Exception as e:
             self.get_logger().error(f"Error processing waypoint: {e}")
@@ -367,8 +401,8 @@ class NavigationNode(Node):
         # Calculate angle to target
         target_heading = self.calculate_heading_to_target(target)
 
-        # Calculate rudder angle using PD control law (from simulator)
-        rudder_angle = self.calculate_rudder_angle(target_heading)
+        # Calculate rudder angle using PID controller
+        rudder_angle = self.calculate_rudder_angle_pid(target_heading)
 
         # Apply rudder angle
         self.set_rudder_angle(rudder_angle)
@@ -399,28 +433,37 @@ class NavigationNode(Node):
             angle = -180 + (angle - 180)
         return angle
 
-    def calculate_rudder_angle(self, target_heading: float) -> float:
+    def calculate_rudder_angle_pid(self, target_heading: float) -> float:
         """
-        Calculate rudder angle using PD control law from simulator,
-        adjusted for 1Hz update rate
+        Calculate rudder angle using PID controller
+
+        Args:
+            target_heading: Desired heading in degrees
+
+        Returns:
+            Rudder angle command in degrees
         """
         # Calculate heading error
-        dtheta = self.print_angle(target_heading - self.current_heading)
+        heading_error = self.print_angle(target_heading - self.current_heading)
 
-        # Convert rotational velocity to degrees/s and apply scaled time constant
-        rot_v = self.rotational_velocity * 180/math.pi * 0.03
+        # Scale error to [-1, 1] range for PID controller
+        heading_error_scaled = heading_error / 180.0
 
-        # Core control law remains the same
-        coeff = 2/math.pi * math.atan((dtheta/40) - rot_v/self.rudder_stability) * 70 # * 70 multiplier to go from 70hz to 1hz
+        # Get time step (1.0 second for 1Hz update rate)
+        dt = 1.0 / self.rudder_update_rate
 
-        # Calculate final rudder angle
-        rudder_angle = -10 * coeff * self.rudder_noise
+        # Update PID controller
+        rudder_correction = self.rudder_pid.update(heading_error_scaled, dt)
+
+        # Apply limits and invert direction (matching friend's implementation)
+        rudder_angle = max(min(rudder_correction, 20), -20) * -1
 
         # Debug logging
         self.get_logger().info(
-            f"Rudder calculation: target={target_heading:.1f}°, "
+            f"PID Rudder: target={target_heading:.1f}°, "
             f"current={self.current_heading:.1f}°, "
-            f"diff={dtheta:.1f}°, "
+            f"error={heading_error:.1f}°, "
+            f"scaled_error={heading_error_scaled:.3f}, "
             f"rudder={rudder_angle:.1f}°"
         )
 
@@ -515,7 +558,12 @@ class NavigationNode(Node):
             "optimal_sail_angle": self.calculate_sail_angle(),
             "active_course": self.active_course,
             "current_target_idx": self.current_target_idx,
-            "full_path": self.full_path
+            "full_path": self.full_path,
+            "pid_gains": {
+                "kp": self.rudder_pid.Kp,
+                "ki": self.rudder_pid.Ki,
+                "kd": self.rudder_pid.Kd
+            }
         }
 
         # Add current target if available

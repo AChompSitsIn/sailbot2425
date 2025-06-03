@@ -21,10 +21,9 @@ def angle_to_steps(angle):
     if abs_angle == 0:
         return 0
 
-    length = math.sqrt(BOOM_LENGTH**2 + WINCH_TO_MAST**2 -
-                      2 * BOOM_LENGTH * WINCH_TO_MAST * math.cos(math.radians(abs_angle)))
-
+    length = math.sqrt(BOOM_LENGTH**2 + WINCH_TO_MAST**2 - 2 * BOOM_LENGTH * WINCH_TO_MAST * math.cos(math.radians(abs_angle)))
     steps = int(length / (2 * math.pi * SPOOL_RADIUS / GEAR_RATIO / STEPS_PER_REVOLUTION * 2))
+
     return steps
 
 def send_steps(steps):
