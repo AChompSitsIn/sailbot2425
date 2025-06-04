@@ -9,6 +9,9 @@ NC='\033[0m' # No Color
 
 echo -e "${YELLOW}===== Starting Sailbot System =====${NC}"
 
+# Warm-up pause
+sleep 3
+
 # Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -19,12 +22,12 @@ echo -e "${GREEN}Workspace directory: $(pwd)${NC}"
 # Source ROS
 echo -e "${YELLOW}Sourcing ROS...${NC}"
 source /opt/ros/jazzy/setup.bash
+sleep 2
 
 # Check for dependencies
 echo -e "${YELLOW}Checking dependencies...${NC}"
 missing_deps=false
 
-# Check for necessary Python packages
 for pkg in python3-serial python3-smbus i2c-tools; do
     if ! dpkg -l | grep -q "$pkg"; then
         echo -e "${RED}Missing dependency: $pkg${NC}"
@@ -46,25 +49,26 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Post-build delay
+sleep 5
+
 # Source the workspace
 echo -e "${YELLOW}Sourcing workspace...${NC}"
 source install/setup.bash
+sleep 2
 
 # Start the nodes
 echo -e "${YELLOW}Starting ROS nodes...${NC}"
 
-# Array to store process IDs
 declare -a pids
 
-# Function to start a node
 start_node() {
     echo -e "${GREEN}Starting $1 $2...${NC}"
     ros2 run $1 $2 &
     pids+=($!)
-    sleep 2  # Give the node time to initialize
+    sleep 4  # Increased delay for stability
 }
 
-# Launch the nodes in sequence
 start_node sensors gps
 start_node sensors rudder_control
 start_node sensors winch_control
@@ -76,10 +80,8 @@ start_node sailboat_control state_management
 echo -e "${GREEN}All nodes started!${NC}"
 echo -e "${YELLOW}Running nodes (PIDs: ${pids[@]})${NC}"
 
-# Handle clean shutdown on Ctrl+C
 trap 'echo -e "${YELLOW}Shutting down nodes...${NC}"; for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null; done; echo -e "${GREEN}All nodes stopped.${NC}"; exit 0' SIGINT
 
-# Keep the script running to maintain the processes
 echo -e "${YELLOW}Press Ctrl+C to stop all nodes${NC}"
 while true; do
     sleep 1
