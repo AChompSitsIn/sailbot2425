@@ -14,26 +14,41 @@ class RadioCommNode(Node):
     ROS Node for radio communication between the sailbot and a remote control station.
     Receives commands from the remote station and publishes them to the 'radio_commands' topic.
     Sends status updates back to the remote station when requested, using simple text format.
+
+    Now also handles RC control commands for rudder and sail angles.
     """
     def __init__(self):
         super().__init__('radio_comm_node')
-        
+
         # Parameters for serial connection
         self.declare_parameter('port', '/dev/ttyRADIO')
         self.declare_parameter('baud_rate', 57600)
         self.declare_parameter('status_interval', 5.0)  # Interval in seconds for auto status updates
-        
+
         self.port = self.get_parameter('port').value
         self.baud_rate = self.get_parameter('baud_rate').value
         self.status_interval = self.get_parameter('status_interval').value
-        
+
         # Command publisher
         self.command_publisher = self.create_publisher(
             Int32,
             'radio_commands',
             10
         )
-        
+
+        # RC Control publishers
+        self.rudder_command_publisher = self.create_publisher(
+            Float32,
+            'rudder/command',
+            10
+        )
+
+        self.sail_angle_publisher = self.create_publisher(
+            Float32,
+            'sail/angle',
+            10
+        )
+
         # Subscribe to status info
         self.status_subscription = self.create_subscription(
             String,
@@ -41,7 +56,7 @@ class RadioCommNode(Node):
             self.status_callback,
             10
         )
-        
+
         # Subscribe to GPS data
         self.gps_subscription = self.create_subscription(
             NavSatFix,
@@ -49,7 +64,7 @@ class RadioCommNode(Node):
             self.gps_callback,
             10
         )
-        
+
         # Subscribe to GPS speed
         self.speed_subscription = self.create_subscription(
             Float64,
@@ -57,7 +72,7 @@ class RadioCommNode(Node):
             self.speed_callback,
             10
         )
-        
+
         # Subscribe to GPS fix quality
         self.fix_quality_subscription = self.create_subscription(
             Int32,
@@ -65,7 +80,7 @@ class RadioCommNode(Node):
             self.fix_quality_callback,
             10
         )
-        
+
         # Subscribe to wind direction
         self.wind_subscription = self.create_subscription(
             Float32,
@@ -73,7 +88,7 @@ class RadioCommNode(Node):
             self.wind_callback,
             10
         )
-        
+
         # Initialize sensor data storage
         self.latest_gps = {
             "latitude": 0.0,
@@ -83,34 +98,34 @@ class RadioCommNode(Node):
             "timestamp": 0
         }
         self.latest_wind_direction = 0.0
-        
+
         # Status information - stored in simple format
         self.control_mode = "rc"
         self.event_type = "developer_mode"
         self.current_waypoint = None
         self.total_waypoints = 0
         self.last_completed_waypoint = None
-        
+
         # Serial connection will be None initially
         self.serial_conn = None
-        
+
         # Create thread for receiving commands with auto-reconnect
         self.running = True
         self.receiver_thread = threading.Thread(target=self.receive_commands_with_reconnect)
         self.receiver_thread.daemon = True
         self.receiver_thread.start()
-        
+
         # Timer for periodic status updates
         self.create_timer(self.status_interval, self.send_periodic_status)
-        
-        self.get_logger().info('Radio Communication Node initialized')
-    
+
+        self.get_logger().info('Radio Communication Node initialized with RC support')
+
     def connect_serial(self):
         """Connect to serial port with error handling"""
         try:
             if self.serial_conn and self.serial_conn.is_open:
                 self.serial_conn.close()
-                
+
             self.serial_conn = serial.Serial(
                 port=self.port,
                 baudrate=self.baud_rate,
@@ -120,21 +135,21 @@ class RadioCommNode(Node):
                 xonxoff=False
             )
             self.get_logger().info(f'Connected to radio on {self.port} at {self.baud_rate} baud')
-            
+
             # Send initial connection message
             self.send_initial_message()
             return True
-            
+
         except (serial.SerialException, OSError) as e:
             self.get_logger().error(f'Failed to connect to radio: {e}')
             self.serial_conn = None
             return False
-    
+
     def send_initial_message(self):
         """Send initial message to establish connection with the remote terminal"""
         if not self.serial_conn or not self.serial_conn.is_open:
             return
-            
+
         try:
             # Simple initial message: 0xB0 (header) + 0x55 + 0xAA (magic bytes)
             init_msg = bytearray([0xB0, 0x55, 0xAA])
@@ -142,26 +157,50 @@ class RadioCommNode(Node):
             self.get_logger().debug('Sent initial connection message')
         except Exception as e:
             self.get_logger().error(f'Error sending initial message: {e}')
-    
+
     def gps_callback(self, msg: NavSatFix):
         """Store latest GPS position data"""
         self.latest_gps["latitude"] = msg.latitude
         self.latest_gps["longitude"] = msg.longitude
         self.latest_gps["timestamp"] = self.get_clock().now().to_msg().sec
-    
+
     def speed_callback(self, msg: Float64):
         """Store latest GPS speed data"""
         self.latest_gps["speed"] = msg.data
-    
+
     def fix_quality_callback(self, msg: Int32):
         """Store latest GPS fix quality data"""
         self.latest_gps["fix_quality"] = msg.data
-    
+
     def wind_callback(self, msg: Float32):
         """Store latest wind direction data"""
         self.latest_wind_direction = msg.data
         self.get_logger().debug(f"Received wind direction: {msg.data:.1f}°")
-    
+
+    def process_rc_rudder_command(self, data_byte):
+        """Process RC rudder command"""
+        # Convert byte (0-255) back to angle (-45 to 45 degrees)
+        rudder_angle = (data_byte * 90.0 / 255.0) - 45.0
+
+        # Publish rudder command
+        msg = Float32()
+        msg.data = rudder_angle
+        self.rudder_command_publisher.publish(msg)
+
+        self.get_logger().info(f'RC Rudder command: {rudder_angle:.1f}°')
+
+    def process_rc_sail_command(self, data_byte):
+        """Process RC sail command"""
+        # Convert byte (0-255) back to angle (0 to 90 degrees)
+        sail_angle = data_byte * 90.0 / 255.0
+
+        # Publish sail angle command
+        msg = Float32()
+        msg.data = sail_angle
+        self.sail_angle_publisher.publish(msg)
+
+        self.get_logger().info(f'RC Sail command: {sail_angle:.1f}°')
+
     def receive_commands_with_reconnect(self):
         """Background thread to receive commands with auto-reconnect"""
         while self.running:
@@ -171,134 +210,163 @@ class RadioCommNode(Node):
                     if not self.connect_serial():
                         time.sleep(2)  # Wait before retry
                         continue
-                
+
                 # Main receive loop
                 buffer = bytearray()
-                
+
                 while self.running and self.serial_conn and self.serial_conn.is_open:
                     try:
                         # Check if data is available
                         if self.serial_conn.in_waiting > 0:
                             # Read one byte
                             buffer += self.serial_conn.read(1)
-                            
+
                             # Check for command header (0xC0)
                             if len(buffer) == 1 and buffer[0] != 0xC0:
                                 buffer = bytearray()
                                 continue
-                            
-                            # If we have at least 3 bytes (header + command byte + checksum)
-                            if len(buffer) >= 3:
-                                # Validate checksum (simple XOR)
-                                if buffer[1] ^ 0xFF == buffer[2]:
-                                    # Extract command
-                                    command = buffer[1]
-                                    
-                                    # Send immediate acknowledgment
-                                    ack_msg = bytearray([0xA0, command, command ^ 0xFF])
-                                    self.serial_conn.write(ack_msg)
-                                    
-                                    # Special handling for status request command (9)
-                                    if command == 9:
-                                        self.get_logger().info('Status update requested')
-                                        self.send_status_update()
+
+                            # Process based on command type
+                            if len(buffer) >= 2:
+                                command = buffer[1]
+
+                                # RC commands need 4 bytes total
+                                if command in [10, 11]:  # RC commands
+                                    if len(buffer) >= 4:
+                                        # Extract data and checksum
+                                        data_byte = buffer[2]
+                                        checksum = buffer[3]
+
+                                        # Validate checksum
+                                        expected_checksum = (command ^ data_byte) ^ 0xFF
+                                        if checksum == expected_checksum:
+                                            # Send acknowledgment
+                                            ack_msg = bytearray([0xA0, command, command ^ 0xFF])
+                                            self.serial_conn.write(ack_msg)
+
+                                            # Process RC command
+                                            if command == 10:  # Rudder
+                                                self.process_rc_rudder_command(data_byte)
+                                            elif command == 11:  # Sail
+                                                self.process_rc_sail_command(data_byte)
+                                        else:
+                                            self.get_logger().warning(f'Invalid checksum for RC command {command}')
+
+                                        # Reset buffer
+                                        buffer = bytearray()
+
+                                # Standard commands need 3 bytes total
+                                elif len(buffer) >= 3:
+                                    # Validate checksum (simple XOR)
+                                    if buffer[1] ^ 0xFF == buffer[2]:
+                                        # Extract command
+                                        command = buffer[1]
+
+                                        # Send immediate acknowledgment
+                                        ack_msg = bytearray([0xA0, command, command ^ 0xFF])
+                                        self.serial_conn.write(ack_msg)
+
+                                        # Special handling for status request command (9)
+                                        if command == 9:
+                                            self.get_logger().info('Status update requested')
+                                            self.send_status_update()
+                                        else:
+                                            # Process other commands
+                                            msg = Int32()
+                                            msg.data = command
+                                            self.command_publisher.publish(msg)
+
+                                            # Log received command
+                                            self.get_logger().info(f'Received command: {command}')
                                     else:
-                                        # Process other commands
-                                        msg = Int32()
-                                        msg.data = command
-                                        self.command_publisher.publish(msg)
-                                        
-                                        # Log received command
-                                        self.get_logger().info(f'Received command: {command}')
-                                else:
-                                    self.get_logger().warning('Invalid checksum in received command')
-                                
-                                # Reset buffer for next command
-                                buffer = bytearray()
+                                        self.get_logger().warning('Invalid checksum in received command')
+
+                                    # Reset buffer for next command
+                                    buffer = bytearray()
                         else:
                             # No data available, sleep briefly
                             time.sleep(0.01)
-                            
+
                     except (serial.SerialException, OSError) as e:
                         self.get_logger().error(f'[ERROR] Serial error in receive loop: {e}')
                         # Break inner loop to reconnect
                         break
-                        
+
             except Exception as e:
                 self.get_logger().error(f'[ERROR] Unexpected error in receive thread: {e}')
                 time.sleep(2)  # Wait before retry
-    
+
     def safe_serial_write(self, data):
         """Safely write to serial with error handling"""
         if not self.serial_conn or not self.serial_conn.is_open:
             return False
-            
+
         try:
             self.serial_conn.write(data)
             return True
         except (serial.SerialException, OSError) as e:
             self.get_logger().error(f'[ERROR] Serial write error: {e}')
             return False
-    
+
     def status_callback(self, msg):
         """Process status update from the boat system"""
         try:
             # Parse the JSON status
             status_data = json.loads(msg.data)
-            
+
             # Extract the values we need in simple format
             self.control_mode = status_data.get("control_mode", "rc")
             self.event_type = status_data.get("event_type", "developer_mode")
-            
+
             # Handle waypoint information
             if "current_waypoint" in status_data and status_data["current_waypoint"]:
                 self.current_waypoint = status_data["current_waypoint"]
-            
+
             if "last_completed_waypoint" in status_data and status_data["last_completed_waypoint"]:
                 self.last_completed_waypoint = status_data["last_completed_waypoint"]
-            
+
             self.total_waypoints = status_data.get("total_waypoints", 0)
-            
+
             # Log that we received a status update
             self.get_logger().info(
                 f"Received status update - mode: {self.control_mode}, "
                 f"event: {self.event_type}"
             )
-            
+
             # Send a status update when mode changes
             self.send_status_update()
-            
+
         except json.JSONDecodeError as e:
             self.get_logger().error(f"Failed to parse status JSON: {e}")
-    
+
     def send_periodic_status(self):
         """Send periodic status updates to remote terminal"""
         self.send_status_update()
-    
+
     def send_status_update(self):
         """Send status update using plain text format"""
         if not self.serial_conn or not self.serial_conn.is_open:
             return
-            
+
         try:
             # Send GPS data in simple text format
             # Format: GPS,lat,lon,speed,fix_quality
             gps_message = f"GPS,{self.latest_gps['latitude']:.6f},{self.latest_gps['longitude']:.6f},{self.latest_gps['speed']:.2f},{self.latest_gps['fix_quality']}\n"
             if self.safe_serial_write(gps_message.encode('utf-8')):
                 self.get_logger().info(f"Sent GPS data: {gps_message.strip()}")
-            
+
             # Send wind direction data
             # Format: WIND,direction
             wind_message = f"WIND,{self.latest_wind_direction:.1f}\n"
             if self.safe_serial_write(wind_message.encode('utf-8')):
                 self.get_logger().info(f"Sent wind data: {wind_message.strip()}")
-            
+
             # Send boat status with actual control mode and event type
             # Format: STATUS,control_mode,event_type
             status_message = f"STATUS,{self.control_mode},{self.event_type}\n"
             if self.safe_serial_write(status_message.encode('utf-8')):
                 self.get_logger().info(f"Sent boat status: {status_message.strip()}")
-            
+
             # Send waypoint info if available
             if self.current_waypoint:
                 try:
@@ -312,17 +380,17 @@ class RadioCommNode(Node):
                             current_wp_info = str(getattr(self.current_waypoint, "lat", 0)) + "," + str(getattr(self.current_waypoint, "long", 0))
                         except:
                             current_wp_info = "unknown"
-                    
+
                     # Format: WAYPOINT,info,total
                     waypoint_message = f"WAYPOINT,{current_wp_info},{self.total_waypoints}\n"
                     if self.safe_serial_write(waypoint_message.encode('utf-8')):
                         self.get_logger().info(f"Sent waypoint info: {waypoint_message.strip()}")
                 except Exception as e:
                     self.get_logger().warning(f"Error formatting waypoint data: {e}")
-                
+
         except Exception as e:
             self.get_logger().error(f'Error sending status update: {e}')
-    
+
     def destroy_node(self):
         """Clean up resources when node is shutdown"""
         self.running = False
