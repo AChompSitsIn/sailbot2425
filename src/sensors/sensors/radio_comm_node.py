@@ -129,10 +129,7 @@ class RadioCommNode(Node):
             self.serial_conn = serial.Serial(
                 port=self.port,
                 baudrate=self.baud_rate,
-                timeout=1.0,
-                rtscts=False,
-                dsrdtr=False,
-                xonxoff=False
+                timeout=1.0
             )
             self.get_logger().info(f'Connected to radio on {self.port} at {self.baud_rate} baud')
 

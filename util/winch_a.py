@@ -17,11 +17,11 @@ I2C_BUS = 1  # Use 1 for Raspberry Pi, may be 0 for older models
 CMD_WINCH_CW_STEPS = 0x12   # Clockwise - let sail out
 CMD_WINCH_CCW_STEPS = 0x13  # Counter-clockwise - bring sail in
 
-# Sail angle conversion parameters (from winch_control_node.py)
-BOOM_LENGTH = 28          # inches
-WINCH_TO_MAST = 40       # inches
-SPOOL_RADIUS = 3         # inches
-GEAR_RATIO = 10
+# Sail angle conversion parameters (corrected values)
+BOOM_LENGTH = 48          # inches
+WINCH_TO_MAST = 44        # inches
+SPOOL_RADIUS = 1.5        # inches
+GEAR_RATIO = 5
 STEPS_PER_REVOLUTION = 1600
 
 class ArduinoStepControl:
@@ -29,10 +29,71 @@ class ArduinoStepControl:
         try:
             self.bus = smbus.SMBus(bus_number)
             self.arduino_addr = arduino_addr
-            print(f"✓ I2C connection established (Bus: {bus_number}, Address: 0x{arduino_addr:02X})")
+            # Track current sail position
+            self.current_angle = 0.0  # Start at 0 degrees
+            self.current_steps = 0    # Start at 0 steps
+            print(f"I2C connection established (Bus: {bus_number}, Address: 0x{arduino_addr:02X})")
+            print(f"Initial sail position: {self.current_angle}° (0 steps)")
         except Exception as e:
-            print(f"✗ Failed to initialize I2C: {e}")
+            print(f"Failed to initialize I2C: {e}")
             sys.exit(1)
+    
+    def move_to_angle(self, target_angle):
+        """
+        Move sail from current position to target angle.
+        Calculates the difference and sends appropriate steps.
+        """
+        # Take absolute value since positive/negative angles produce same result
+        target_angle = abs(target_angle)
+        
+        # Clamp angle to reasonable range
+        target_angle = max(0.0, min(88.0, target_angle))
+        
+        # Calculate target steps
+        target_steps = self.angle_to_steps(target_angle)
+        
+        # Calculate difference in steps
+        steps_difference = target_steps - self.current_steps
+        
+        print(f"\nMoving sail from {self.current_angle}° to {target_angle}°")
+        print(f"Current steps: {self.current_steps}, Target steps: {target_steps}")
+        print(f"Steps difference: {steps_difference}")
+        
+        if steps_difference == 0:
+            print("Sail already at target position!")
+            return True
+        
+        # Determine direction and send command
+        if steps_difference > 0:
+            # Need to let sail out (CW)
+            print(f"Sending CW {abs(steps_difference)} steps (let out)")
+            success = self.send_cw_steps(abs(steps_difference))
+        else:
+            # Need to bring sail in (CCW) 
+            print(f"Sending CCW {abs(steps_difference)} steps (bring in)")
+            success = self.send_ccw_steps(abs(steps_difference))
+        
+        # Update tracked position if successful
+        if success:
+            self.current_angle = target_angle
+            self.current_steps = target_steps
+            print(f"Updated sail position: {self.current_angle}° ({self.current_steps} steps)")
+        
+        return success
+    
+    def set_current_position(self, angle):
+        """Set the current sail position (for calibration)"""
+        angle = abs(angle)
+        angle = max(0.0, min(88.0, angle))
+        
+        self.current_angle = angle
+        self.current_steps = self.angle_to_steps(angle)
+        print(f"Set current sail position: {self.current_angle}° ({self.current_steps} steps)")
+    
+    def get_current_position(self):
+        """Show current tracked sail position"""
+        print(f"Current sail position: {self.current_angle}° ({self.current_steps} steps)")
+        return self.current_angle, self.current_steps
     
     def angle_to_steps(self, target_angle_degrees):
         """
@@ -56,15 +117,18 @@ class ArduinoStepControl:
             2 * BOOM_LENGTH * WINCH_TO_MAST * math.cos(math.radians(target_angle_degrees))
         )
         
-        # Convert to steps
-        target_steps = int(length / (2 * math.pi * SPOOL_RADIUS * GEAR_RATIO * STEPS_PER_REVOLUTION * 2))
+        # Convert to steps: length -> spool rotations -> motor rotations -> steps
+        spool_circumference = 2 * math.pi * SPOOL_RADIUS
+        spool_rotations = length / spool_circumference
+        motor_rotations = spool_rotations * GEAR_RATIO
+        target_steps = int(motor_rotations * STEPS_PER_REVOLUTION)
         
         return target_steps
     
-    def send_cw_steps(self, steps):
+    def send_cw_steps(self, steps, update_tracking=False):
         """Send clockwise steps command (let sail out)"""
         if not (0 <= steps <= 100000):
-            print(f"✗ Error: Steps must be between 0 and 100,000 (got {steps})")
+            print(f"Error: Steps must be between 0 and 100,000 (got {steps})")
             return False
         
         try:
@@ -74,16 +138,23 @@ class ArduinoStepControl:
                         (steps >> 8) & 0xFF, steps & 0xFF])
             
             self.bus.write_i2c_block_data(self.arduino_addr, data[0], data[1:])
-            print(f"✓ Sent: CW {steps} steps (let sail out)")
+            print(f"Sent: CW {steps} steps (let sail out)")
+            
+            # Update tracking if requested
+            if update_tracking:
+                self.current_steps += steps
+                # Convert back to angle (rough estimate)
+                print(f"WARNING: Position tracking may be inaccurate after raw step commands")
+            
             return True
         except Exception as e:
-            print(f"✗ Error sending CW command: {e}")
+            print(f"Error sending CW command: {e}")
             return False
     
-    def send_ccw_steps(self, steps):
+    def send_ccw_steps(self, steps, update_tracking=False):
         """Send counter-clockwise steps command (bring sail in)"""
         if not (0 <= steps <= 100000):
-            print(f"✗ Error: Steps must be between 0 and 100,000 (got {steps})")
+            print(f"Error: Steps must be between 0 and 100,000 (got {steps})")
             return False
         
         try:
@@ -93,10 +164,18 @@ class ArduinoStepControl:
                         (steps >> 8) & 0xFF, steps & 0xFF])
             
             self.bus.write_i2c_block_data(self.arduino_addr, data[0], data[1:])
-            print(f"✓ Sent: CCW {steps} steps (bring sail in)")
+            print(f"Sent: CCW {steps} steps (bring sail in)")
+            
+            # Update tracking if requested
+            if update_tracking:
+                self.current_steps -= steps
+                if self.current_steps < 0:
+                    self.current_steps = 0
+                print(f"WARNING: Position tracking may be inaccurate after raw step commands")
+            
             return True
         except Exception as e:
-            print(f"✗ Error sending CCW command: {e}")
+            print(f"Error sending CCW command: {e}")
             return False
 
 def print_menu():
@@ -104,21 +183,16 @@ def print_menu():
     print("\n" + "=" * 50)
     print("    SAIL WINCH CONTROL TEST SCRIPT")
     print("=" * 50)
-    print("1. Send CW steps (let sail out)")
-    print("2. Send CCW steps (bring sail in)")
-    print("3. Send angle - let out (CW)")
-    print("4. Send angle - bring in (CCW)")
-    print("5. Calculate steps from angle (preview)")
-    print("6. Quick test (10 steps each direction)")
-    print("7. Exit")
+    print("1. Move to angle (tracked positioning)")
+    print("2. Show current position")
+    print("3. Set current position (calibration)")
+    print("4. Send raw CW steps")
+    print("5. Send raw CCW steps") 
+    print("6. Calculate steps from angle (preview)")
+    print("7. Quick test (10 steps each direction)")
+    print("8. Exit")
     print("=" * 50)
 
-<<<<<<< HEAD
-    length = math.sqrt(BOOM_LENGTH**2 + WINCH_TO_MAST**2 - 2 * BOOM_LENGTH * WINCH_TO_MAST * math.cos(math.radians(abs_angle)))
-    steps = int(length / (2 * math.pi * SPOOL_RADIUS / GEAR_RATIO / STEPS_PER_REVOLUTION * 2))
-
-    return steps
-=======
 def get_step_input():
     """Get step count from user with validation"""
     while True:
@@ -148,27 +222,20 @@ def preview_angle_conversion(controller):
     angle = get_angle_input()
     steps = controller.angle_to_steps(angle)
     
-    print(f"\n📐 Angle Conversion Preview:")
+    print(f"\nAngle Conversion Preview:")
     print(f"   Input angle: {angle}°")
     print(f"   Absolute angle: {abs(angle)}°")
     print(f"   Calculated steps: {steps}")
     print(f"   This would move the sail to approximately {abs(angle)}° from center")
 
-def send_angle_command(controller, direction):
-    """Send angle command in specified direction"""
+def send_angle_command(controller):
+    """Send angle command using tracked positioning"""
     angle = get_angle_input()
-    steps = controller.angle_to_steps(angle)
-    
-    print(f"\n📐 Converting {angle}° to {steps} steps...")
-    
-    if direction == "out":
-        return controller.send_cw_steps(steps)
-    else:  # "in"
-        return controller.send_ccw_steps(steps)
+    return controller.move_to_angle(angle)
 
 def quick_test(controller):
     """Run a quick test with 10 steps in each direction"""
-    print("\n🧪 Running quick test (10 steps each direction)...")
+    print("\nRunning quick test (10 steps each direction)...")
     
     print("Testing 10 CW steps (let out)...")
     controller.send_cw_steps(10)
@@ -178,7 +245,7 @@ def quick_test(controller):
     controller.send_ccw_steps(10)
     time.sleep(2)
     
-    print("✓ Quick test complete!")
+    print("Quick test complete!")
 
 def main():
     """Main program loop"""
@@ -197,40 +264,44 @@ def main():
         print_menu()
         
         try:
-            choice = input("\nEnter your choice (1-7): ").strip()
+            choice = input("\nEnter your choice (1-8): ").strip()
             
             if choice == '1':
+                send_angle_command(controller)
+                
+            elif choice == '2':
+                controller.get_current_position()
+                
+            elif choice == '3':
+                angle = get_angle_input()
+                controller.set_current_position(angle)
+                
+            elif choice == '4':
                 steps = get_step_input()
                 controller.send_cw_steps(steps)
                 
-            elif choice == '2':
+            elif choice == '5':
                 steps = get_step_input()
                 controller.send_ccw_steps(steps)
                 
-            elif choice == '3':
-                send_angle_command(controller, "out")
-                
-            elif choice == '4':
-                send_angle_command(controller, "in")
-                
-            elif choice == '5':
+            elif choice == '6':
                 preview_angle_conversion(controller)
                 
-            elif choice == '6':
+            elif choice == '7':
                 quick_test(controller)
                 
-            elif choice == '7':
+            elif choice == '8':
                 print("Exiting...")
                 break
                 
             else:
-                print("Invalid choice. Please enter 1-7.")
+                print("Invalid choice. Please enter 1-8.")
                 
         except KeyboardInterrupt:
             print("\n\nExiting...")
             break
         except Exception as e:
-            print(f"✗ Unexpected error: {e}")
+            print(f"Unexpected error: {e}")
 
 if __name__ == "__main__":
     main()

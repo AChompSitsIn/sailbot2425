@@ -3,7 +3,6 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32
 import smbus
-import struct
 import time
 import math
 
@@ -14,7 +13,7 @@ class WinchControlNode(Node):
     Uses direct I2C communication with the winch Arduino (address 0x08)
 
     Subscribes to:
-    - 'sail/angle': Target sail angle command in degrees (e.g., -90 to 90)
+    - 'sail/angle': Target sail angle command in degrees (e.g., -88 to 88)
 
     Publishes:
     - 'sail/position': Current estimated sail angle in degrees
@@ -24,13 +23,20 @@ class WinchControlNode(Node):
     WINCH_ADDRESS = 0x08
     I2C_BUS = 1  # Use I2C bus 1
 
-    # Command registers from winch_i2c.ino
-    CMD_MOVE_STEPS = 1  # Move a specified number of steps
-    CMD_SET_DIRECTION = 2  # Set motor direction (0=CW, 1=CCW)
-    CMD_SET_ENABLE = 3  # Enable/disable motor (0=disable, 1=enable)
+    # Command codes (matching the standalone script)
+    CMD_WINCH_CW_STEPS = 0x12   # Clockwise - let sail out
+    CMD_WINCH_CCW_STEPS = 0x13  # Counter-clockwise - bring sail in
 
-    # Winch parameters
-    MAX_STEPS = 1600  # Maximum number of steps (adjust as needed)
+    # Sail angle conversion parameters (updated values)
+    BOOM_LENGTH = 48          # inches
+    WINCH_TO_MAST = 44        # inches
+    SPOOL_RADIUS = 1.5        # inches
+    GEAR_RATIO = 5            # Changed from 10 to 5
+    STEPS_PER_REVOLUTION = 1600
+
+    # Sail angle limits
+    MIN_SAIL_ANGLE = -88.0
+    MAX_SAIL_ANGLE = 88.0
 
     def __init__(self):
         super().__init__('winch_control_node')
@@ -39,33 +45,38 @@ class WinchControlNode(Node):
         self.declare_parameter('i2c_bus', self.I2C_BUS)
         self.declare_parameter('winch_address', self.WINCH_ADDRESS)
         self.declare_parameter('update_rate', 10.0)  # Hz
-        self.declare_parameter('max_steps', self.MAX_STEPS)
-        self.declare_parameter('min_sail_angle', -88.0) # Example: Minimum sail angle in degrees
-        self.declare_parameter('max_sail_angle', 88.0)  # Example: Maximum sail angle in degrees
+        self.declare_parameter('boom_length', self.BOOM_LENGTH)
+        self.declare_parameter('winch_to_mast', self.WINCH_TO_MAST)
+        self.declare_parameter('spool_radius', self.SPOOL_RADIUS)
+        self.declare_parameter('gear_ratio', self.GEAR_RATIO)
+        self.declare_parameter('steps_per_revolution', self.STEPS_PER_REVOLUTION)
 
         # Get parameter values
         self.i2c_bus = self.get_parameter('i2c_bus').value
         self.winch_address = self.get_parameter('winch_address').value
         self.update_rate = self.get_parameter('update_rate').value
-        self.max_steps = self.get_parameter('max_steps').value
-        self.min_sail_angle = self.get_parameter('min_sail_angle').value
-        self.max_sail_angle = self.get_parameter('max_sail_angle').value
+        self.boom_length = self.get_parameter('boom_length').value
+        self.winch_to_mast = self.get_parameter('winch_to_mast').value
+        self.spool_radius = self.get_parameter('spool_radius').value
+        self.gear_ratio = self.get_parameter('gear_ratio').value
+        self.steps_per_revolution = self.get_parameter('steps_per_revolution').value
 
-        # Initialize state variables
-        self.current_angle_degrees = 0.0  # Estimated current sail angle in degrees
-        self.current_steps = 0 # Initialize current_steps, assuming a start position (0 steps = min pos = approx 88 deg)
+        # Initialize state variables (track current position like standalone script)
+        self.current_angle = 0.0      # Current sail angle in degrees
+        self.current_steps = 0        # Current step position
+        self.target_angle = 0.0       # Target sail angle
 
         # Initialize publishers
-        self.position_publisher = self.create_publisher( # This now publishes estimated sail angle
+        self.position_publisher = self.create_publisher(
             Float32,
             'sail/position',
             10
         )
 
-        # Initialize subscriber for sail control (sail angle)
+        # Initialize subscriber for sail control
         self.command_subscription = self.create_subscription(
             Float32,
-            'sail/angle', # Changed from 'sail/control'
+            'sail/angle',
             self.command_callback,
             10
         )
@@ -77,9 +88,15 @@ class WinchControlNode(Node):
                 f"I2C initialized on bus {self.i2c_bus}, "
                 f"address 0x{self.winch_address:02X}"
             )
-
-            # Enable the motor
-            self.enable_motor(True)
+            
+            # Log sail parameters
+            self.get_logger().info(
+                f"Sail parameters - Boom: {self.boom_length}in, "
+                f"Winch-to-mast: {self.winch_to_mast}in, "
+                f"Spool radius: {self.spool_radius}in, "
+                f"Gear ratio: {self.gear_ratio}, "
+                f"Steps/rev: {self.steps_per_revolution}"
+            )
 
         except Exception as e:
             self.get_logger().error(f"Failed to initialize I2C: {e}")
@@ -88,224 +105,215 @@ class WinchControlNode(Node):
         self.timer = self.create_timer(1.0/self.update_rate, self.update_position)
 
         self.get_logger().info('Winch control node initialized')
+        self.get_logger().info(f'Initial sail position: {self.current_angle}° ({self.current_steps} steps)')
 
-    def send_command(self, command, *data):
+    def angle_to_steps(self, target_angle_degrees):
         """
-        Send a command to the winch Arduino
-
+        Convert target sail angle in degrees to motor steps using winch math.
+        Uses law of cosines like the standalone script.
+        
         Args:
-            command: Command code
-            *data: Command parameters
-        """
-        try:
-            # Command-specific formatting
-            if command == self.CMD_MOVE_STEPS and len(data) == 1:
-                steps = data[0]
-                high_byte = (steps >> 8) & 0xFF
-                low_byte = steps & 0xFF
-
-                self.bus.write_i2c_block_data(
-                    self.winch_address,
-                    command,
-                    [high_byte, low_byte]
-                )
-            else:
-                # For simple commands like direction or enable
-                self.bus.write_i2c_block_data(
-                    self.winch_address,
-                    command,
-                    list(data)
-                )
-
-            return True
-        except Exception as e:
-            self.get_logger().error(f"Error sending command to winch Arduino: {e}")
-            return False
-
-    def enable_motor(self, enable):
-        """
-        Enable or disable the stepper motor
-
-        Args:
-            enable: True to enable, False to disable
-        """
-        value = 1 if enable else 0
-        result = self.send_command(self.CMD_SET_ENABLE, value)
-        if result:
-            status = "enabled" if enable else "disabled"
-            self.get_logger().info(f"Winch motor {status}")
-
-        return result
-
-    def set_direction(self, direction):
-        """
-        Set the stepper motor direction
-
-        Args:
-            direction: 0 for CW, 1 for CCW
-        """
-        return self.send_command(self.CMD_SET_DIRECTION, direction)
-
-    def move_steps(self, steps):
-        """
-        Move the stepper motor a specified number of steps
-
-        Args:
-            steps: Number of steps to move
-        """
-        return self.send_command(self.CMD_MOVE_STEPS, steps)
-
-    def angle_to_steps(self, target_angle_degrees: float) -> int:
-        """
-        Convert target sail angle in degrees to target motor steps.
-
-        Args:
-            target_angle_degrees: The desired sail angle in degrees.
-                                 (e.g., -90 for full port, 0 for centered, 90 for full starboard)
-
+            target_angle_degrees: The desired sail angle in degrees
+            
         Returns:
-            The corresponding number of motor steps from the zero/reference position.
+            The corresponding number of motor steps
         """
-        # Clamp the angle to ensure it's within the defined operational range
-        target_angle_degrees = max(self.min_sail_angle, min(self.max_sail_angle, target_angle_degrees))
-
-        sail_side = True # True for port, False for starboard
-
-        # keep track of if the sail side should be port or starboard
-        if target_angle_degrees < 0:
-            sail_side = False
-        elif target_angle_degrees > 0:
-            sail_side = True
-
-        print(sail_side)
-
+        # Take absolute value since positive/negative angles produce same result
         target_angle_degrees = abs(target_angle_degrees)
-
-        print(target_angle_degrees)
-
-        boom_length = 28 # inches
-        winch_to_mast = 40 # inches
-        spool_radius = 3 # inches
-        gear_ratio = 10
-        steps_per_revolution = 1600
-
-        length = math.sqrt(boom_length**2 + winch_to_mast**2 - 2 * boom_length * winch_to_mast * math.cos(math.radians(target_angle_degrees)))
-        target_steps = int(length / (2 * math.pi * spool_radius * gear_ratio * steps_per_revolution * 2)) # the *2 is for the conversion for the other gear ratio
-
+        
+        # Clamp angle to reasonable range
+        target_angle_degrees = max(0.0, min(88.0, target_angle_degrees))
+        
+        # Calculate length using law of cosines
+        length = math.sqrt(
+            self.boom_length**2 + self.winch_to_mast**2 - 
+            2 * self.boom_length * self.winch_to_mast * math.cos(math.radians(target_angle_degrees))
+        )
+        
+        # Convert to steps: length -> spool rotations -> motor rotations -> steps
+        spool_circumference = 2 * math.pi * self.spool_radius
+        spool_rotations = length / spool_circumference
+        motor_rotations = spool_rotations * self.gear_ratio
+        target_steps = int(motor_rotations * self.steps_per_revolution)
+        
         return target_steps
 
-    def steps_to_angle(self, current_steps: int) -> float:
+    def steps_to_angle(self, current_steps):
         """
-        Convert current motor steps to estimated sail angle in degrees.
-
+        Convert current motor steps back to estimated sail angle.
+        This is an approximation for position reporting.
+        
         Args:
-            current_steps: The current number of motor steps from the zero/reference position.
-
+            current_steps: The current number of motor steps
+            
         Returns:
-            The estimated sail angle in degrees.
+            The estimated sail angle in degrees
         """
-        # ####################################################################
-        # START OF USER IMPLEMENTATION AREA: STEPS TO ANGLE CONVERSION
-        # ####################################################################
-        #
-        # Implement your logic here to convert `current_steps` back to `estimated_angle_degrees`.
-        # This is the inverse of the `angle_to_steps` logic.
-        #
-        # Example (LINEAR MAPPING, INVERSE OF THE ABOVE `angle_to_steps` EXAMPLE):
-        # if self.max_steps == 0: # Avoid division by zero
-        #    return self.min_sail_angle # Or some default
-        # normalized_position = float(current_steps) / float(self.max_steps)
-        # range_of_angles = self.max_sail_angle - self.min_sail_angle
-        # estimated_angle_degrees = self.min_sail_angle + (normalized_position * range_of_angles)
+        # Reverse the angle_to_steps calculation
+        # This is approximate since we're doing inverse trig
+        
+        if current_steps <= 0:
+            return 0.0
+        
+        # Calculate length from steps
+        motor_rotations = current_steps / self.steps_per_revolution
+        spool_rotations = motor_rotations / self.gear_ratio
+        spool_circumference = 2 * math.pi * self.spool_radius
+        length = spool_rotations * spool_circumference
+        
+        # Use law of cosines to find angle
+        # length^2 = boom^2 + winch_to_mast^2 - 2*boom*winch_to_mast*cos(angle)
+        # Solve for angle:
+        cos_angle = (self.boom_length**2 + self.winch_to_mast**2 - length**2) / (2 * self.boom_length * self.winch_to_mast)
+        
+        # Clamp cos_angle to valid range [-1, 1]
+        cos_angle = max(-1.0, min(1.0, cos_angle))
+        
+        angle_radians = math.acos(cos_angle)
+        angle_degrees = math.degrees(angle_radians)
+        
+        return max(0.0, min(88.0, angle_degrees))
 
-        # Placeholder: Inverse of the placeholder in angle_to_steps
-        if self.max_steps == 0:
-            return self.min_sail_angle # Or some default like 0.0
+    def send_cw_steps(self, steps):
+        """Send clockwise steps command (let sail out)"""
+        if not (0 <= steps <= 100000):
+            self.get_logger().error(f"Steps must be between 0 and 100,000 (got {steps})")
+            return False
+        
+        try:
+            # Prepare command: 1 byte command + 4 bytes step count (big-endian)
+            data = [(steps >> 24) & 0xFF, (steps >> 16) & 0xFF, 
+                   (steps >> 8) & 0xFF, steps & 0xFF]
+            
+            self.bus.write_i2c_block_data(self.winch_address, self.CMD_WINCH_CW_STEPS, data)
+            self.get_logger().debug(f"Sent: CW {steps} steps (let sail out)")
+            return True
+            
+        except Exception as e:
+            self.get_logger().error(f"Error sending CW command: {e}")
+            return False
 
-        normalized_position = float(current_steps) / float(self.max_steps)
-        angle_range = self.max_sail_angle - self.min_sail_angle
-        estimated_angle_degrees = self.min_sail_angle + (normalized_position * angle_range)
+    def send_ccw_steps(self, steps):
+        """Send counter-clockwise steps command (bring sail in)"""
+        if not (0 <= steps <= 100000):
+            self.get_logger().error(f"Steps must be between 0 and 100,000 (got {steps})")
+            return False
+        
+        try:
+            # Prepare command: 1 byte command + 4 bytes step count (big-endian)
+            data = [(steps >> 24) & 0xFF, (steps >> 16) & 0xFF, 
+                   (steps >> 8) & 0xFF, steps & 0xFF]
+            
+            self.bus.write_i2c_block_data(self.winch_address, self.CMD_WINCH_CCW_STEPS, data)
+            self.get_logger().debug(f"Sent: CCW {steps} steps (bring sail in)")
+            return True
+            
+        except Exception as e:
+            self.get_logger().error(f"Error sending CCW command: {e}")
+            return False
 
-        self.get_logger().debug(f"Steps {current_steps} -> Normalized {normalized_position:.2f} -> Estimated Angle: {estimated_angle_degrees:.1f}deg")
-        # ####################################################################
-        # END OF USER IMPLEMENTATION AREA
-        # ####################################################################
+    def move_to_angle(self, target_angle):
+        """
+        Move sail from current position to target angle.
+        Calculates the difference and sends appropriate steps.
+        """
+        # Take absolute value since positive/negative angles produce same result
+        target_angle = abs(target_angle)
+        
+        # Clamp angle to reasonable range
+        target_angle = max(0.0, min(88.0, target_angle))
+        
+        # Calculate target steps
+        target_steps = self.angle_to_steps(target_angle)
+        
+        # Calculate difference in steps
+        steps_difference = target_steps - self.current_steps
+        
+        self.get_logger().info(
+            f"Moving sail from {self.current_angle:.1f}° to {target_angle:.1f}°"
+        )
+        self.get_logger().debug(
+            f"Current steps: {self.current_steps}, Target steps: {target_steps}, "
+            f"Steps difference: {steps_difference}"
+        )
+        
+        if steps_difference == 0:
+            self.get_logger().info("Sail already at target position!")
+            return True
+        
+        # Determine direction and send command
+        success = False
+        if steps_difference > 0:
+            # Need to let sail out (CW)
+            self.get_logger().info(f"Sending CW {abs(steps_difference)} steps (let out)")
+            success = self.send_cw_steps(abs(steps_difference))
+        else:
+            # Need to bring sail in (CCW) 
+            self.get_logger().info(f"Sending CCW {abs(steps_difference)} steps (bring in)")
+            success = self.send_ccw_steps(abs(steps_difference))
+        
+        # Update tracked position if successful
+        if success:
+            self.current_angle = target_angle
+            self.current_steps = target_steps
+            self.get_logger().info(
+                f"Updated sail position: {self.current_angle:.1f}° ({self.current_steps} steps)"
+            )
+            # Publish updated position
+            self.publish_position()
+        
+        return success
 
-        return estimated_angle_degrees
+    def set_current_position(self, angle):
+        """Set the current sail position (for calibration)"""
+        angle = abs(angle)
+        angle = max(0.0, min(88.0, angle))
+        
+        self.current_angle = angle
+        self.current_steps = self.angle_to_steps(angle)
+        self.get_logger().info(f"Set current sail position: {self.current_angle:.1f}° ({self.current_steps} steps)")
+        self.publish_position()
 
-    def command_callback(self, msg: Float32):
+    def command_callback(self, msg):
         """
         Handle sail angle commands.
 
         Args:
             msg: Float32 message with target sail angle in degrees.
         """
-        target_angle_degrees = msg.data
+        target_angle = msg.data
 
         # Log the received command
-        self.get_logger().info(f"Received sail angle command: {target_angle_degrees:.1f} degrees")
+        self.get_logger().info(f"Received sail angle command: {target_angle:.1f}°")
 
-        # Convert target angle to target steps using user-defined logic
-        target_steps = self.angle_to_steps(target_angle_degrees)
+        # Validate range
+        if abs(target_angle) > 88.0:
+            self.get_logger().warn(
+                f"Target angle {target_angle:.1f}° exceeds maximum (±88°). Clamping."
+            )
 
-        # Calculate difference in steps
-        steps_diff = target_steps - self.current_steps
-
-        if steps_diff != 0:
-            # Determine direction: 1 for CCW (typically increasing steps for sail trim in/positive angle), 0 for CW (sail ease out/negative angle)
-            # This depends on your winch setup and how you define steps vs angle.
-            # If positive angle (e.g., starboard trim) means more steps:
-            direction = 1 if steps_diff > 0 else 0
-            # If positive angle means fewer steps (e.g., steps count down from max for starboard trim):
-            # direction = 0 if steps_diff > 0 else 1
-
-            if not self.set_direction(direction):
-                self.get_logger().error("Failed to set winch direction.")
-                return
-
-            # Send move command for the absolute number of steps
-            steps_to_move = abs(steps_diff)
-            if self.move_steps(steps_to_move):
-                self.current_steps = target_steps
-                # Update current_angle_degrees based on the new step count
-                self.current_angle_degrees = self.steps_to_angle(self.current_steps)
-                self.get_logger().info(
-                    f"Moving sail to target angle {target_angle_degrees:.1f}° (target steps: {target_steps}). "
-                    f"Moving {steps_to_move} steps, direction: {'CCW (trim in/positive angle)' if direction == 1 else 'CW (ease out/negative angle)'}. "
-                    f"New current steps: {self.current_steps}, Estimated new angle: {self.current_angle_degrees:.1f}°"
-                )
-
-                # Publish updated estimated sail angle
-                self.publish_position()
-            else:
-                self.get_logger().error(f"Failed to move winch by {steps_to_move} steps.")
-        else:
-            self.get_logger().info(f"Sail already at target steps ({target_steps}) for angle {target_angle_degrees:.1f}°. No movement needed.")
-            # Ensure the current angle is also up-to-date if no movement
-            self.current_angle_degrees = self.steps_to_angle(self.current_steps)
-            self.publish_position()
+        self.target_angle = target_angle
 
     def update_position(self):
-        """Periodic update - publish current estimated sail angle"""
-        # Potentially, you could add a read from the Arduino if it can report its actual step count.
-        # For now, we rely on our internal tracking.
-        self.publish_position()
+        """Periodic update - move to target angle if needed and publish position"""
+        # Check if we need to move to target
+        if abs(self.target_angle) != self.current_angle:
+            self.move_to_angle(self.target_angle)
+        else:
+            # Just publish current position
+            self.publish_position()
 
     def publish_position(self):
         """Publish current estimated sail angle in degrees"""
         msg = Float32()
-        # Convert current_steps back to an angle for publishing
-        self.current_angle_degrees = self.steps_to_angle(self.current_steps)
-        msg.data = float(self.current_angle_degrees)
+        msg.data = float(self.current_angle)
         self.position_publisher.publish(msg)
-        self.get_logger().debug(f"Published current estimated sail angle: {self.current_angle_degrees:.1f}° (from {self.current_steps} steps)")
+        self.get_logger().debug(f"Published current sail angle: {self.current_angle:.1f}°")
 
     def destroy_node(self):
         """Clean up on shutdown"""
         try:
-            # Disable motor
-            self.enable_motor(False)
-            self.get_logger().info("Disabled winch motor on shutdown")
+            self.get_logger().info("Winch control node shutting down")
         except Exception as e:
             self.get_logger().error(f"Error on shutdown: {e}")
 

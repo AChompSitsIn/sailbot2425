@@ -12,24 +12,25 @@ class RudderControlNode(Node):
     Uses direct I2C communication with the rudder Arduino (address 0x09)
     
     Subscribes to:
-    - 'rudder/command': Angle in degrees (-45 to 45)
+    - 'rudder/command': Angle in degrees (-21 to 21)
     
     Publishes:
-    - 'rudder/position': Current position of the rudder (arduino servo value 30-160)
+    - 'rudder/position': Current position of the rudder (servo angle 36-78)
     """
     
     # Arduino I2C configuration
     RUDDER_ADDRESS = 0x09
     I2C_BUS = 1  # Use I2C bus 1
+    SERVO_CMD = 0x20  # Command byte for servo control
     
-    # Rudder position limits (from Arduino)
-    MIN_POSITION = 30
-    MAX_POSITION = 160
-    CENTER_POSITION = 90
+    # Rudder configuration based on new system
+    NEUTRAL_SERVO_ANGLE = 57  # True 0 position for rudder
+    MIN_RUDDER_ANGLE = -21.0  # Maximum angle to port (left)
+    MAX_RUDDER_ANGLE = 21.0   # Maximum angle to starboard (right)
     
-    # Mapping from ROS standard angles to servo positions
-    MIN_ANGLE = -45.0  # Maximum angle to port (negative)
-    MAX_ANGLE = 45.0   # Maximum angle to starboard (positive)
+    # Corresponding servo positions
+    MIN_SERVO_POSITION = NEUTRAL_SERVO_ANGLE + MIN_RUDDER_ANGLE  # 36
+    MAX_SERVO_POSITION = NEUTRAL_SERVO_ANGLE + MAX_RUDDER_ANGLE  # 78
     
     def __init__(self):
         super().__init__('rudder_control_node')
@@ -45,8 +46,9 @@ class RudderControlNode(Node):
         self.update_rate = self.get_parameter('update_rate').value
         
         # Initialize state variables
-        self.current_position = self.CENTER_POSITION
-        self.target_position = self.CENTER_POSITION
+        self.current_rudder_angle = 0.0  # Current rudder angle (-21 to +21)
+        self.current_servo_position = self.NEUTRAL_SERVO_ANGLE  # Current servo position
+        self.target_rudder_angle = 0.0
         
         # Initialize publishers
         self.position_publisher = self.create_publisher(
@@ -71,8 +73,8 @@ class RudderControlNode(Node):
                 f"address 0x{self.rudder_address:02X}"
             )
             
-            # Set initial position to center
-            self.set_rudder_position(self.CENTER_POSITION)
+            # Set initial position to neutral (0°)
+            self.set_rudder_angle(0.0)
             
         except Exception as e:
             self.get_logger().error(f"Failed to initialize I2C: {e}")
@@ -80,48 +82,78 @@ class RudderControlNode(Node):
         # Create timer for periodic updates
         self.timer = self.create_timer(1.0/self.update_rate, self.update_rudder)
         
-        self.get_logger().info('Rudder control node initialized')
+        self.get_logger().info(
+            f'Rudder control node initialized - Range: {self.MIN_RUDDER_ANGLE}° to {self.MAX_RUDDER_ANGLE}°, '
+            f'Servo range: {self.MIN_SERVO_POSITION}-{self.MAX_SERVO_POSITION}'
+        )
     
-    def angle_to_position(self, angle):
+    def rudder_angle_to_servo_position(self, rudder_angle):
         """
-        Convert from ROS standard angle (-45 to 45) to servo position (30 to 160)
+        Convert from rudder angle (-21 to 21) to servo position
+        
+        Uses formula: servo_position = 57 + rudder_angle
         
         Args:
-            angle: Angle in degrees (-45 to 45)
+            rudder_angle: Rudder angle in degrees (-21 to 21)
+                         Negative = left/port, Positive = right/starboard
             
         Returns:
-            Servo position value (30 to 160)
+            Servo position value (36 to 78)
         """
-        # Ensure angle is within limits
-        angle = max(self.MIN_ANGLE, min(self.MAX_ANGLE, angle))
+        # Constrain rudder angle to safe range
+        rudder_angle = max(self.MIN_RUDDER_ANGLE, min(self.MAX_RUDDER_ANGLE, rudder_angle))
         
-        # Map from angle range to position range
-        normalized = (angle - self.MIN_ANGLE) / (self.MAX_ANGLE - self.MIN_ANGLE)
-        position = int(self.MIN_POSITION + normalized * (self.MAX_POSITION - self.MIN_POSITION))
+        # Convert using the formula: servo_angle = 57 + rudder_angle
+        servo_position = int(self.NEUTRAL_SERVO_ANGLE + rudder_angle)
         
-        return position
+        return servo_position
     
-    def set_rudder_position(self, position):
+    def servo_position_to_rudder_angle(self, servo_position):
         """
-        Send position directly to Arduino via I2C
+        Convert from servo position back to rudder angle
         
         Args:
-            position: Servo position (30 to 160)
+            servo_position: Servo position (36 to 78)
+            
+        Returns:
+            Rudder angle in degrees (-21 to 21)
         """
-        # Ensure position is within limits
-        position = max(self.MIN_POSITION, min(self.MAX_POSITION, position))
+        return float(servo_position - self.NEUTRAL_SERVO_ANGLE)
+    
+    def set_rudder_angle(self, rudder_angle):
+        """
+        Set rudder to specified angle via I2C
+        
+        Args:
+            rudder_angle: Rudder angle in degrees (-21 to 21)
+                         Negative = left/port, Positive = right/starboard
+        """
+        # Convert to servo position
+        servo_position = self.rudder_angle_to_servo_position(rudder_angle)
         
         try:
-            # Send position to Arduino
-            self.bus.write_byte(self.rudder_address, position)
-            self.current_position = position
-            self.get_logger().debug(f"Sent rudder position: {position}")
+            # Send command using block data with command byte
+            self.bus.write_i2c_block_data(
+                self.rudder_address, 
+                self.SERVO_CMD, 
+                [servo_position]
+            )
+            
+            # Update current state
+            self.current_servo_position = servo_position
+            self.current_rudder_angle = self.servo_position_to_rudder_angle(servo_position)
+            
+            self.get_logger().debug(
+                f"Rudder angle: {self.current_rudder_angle:+.1f}° → "
+                f"Servo position: {servo_position}°"
+            )
             
             # Publish current position
             self.publish_position()
             return True
+            
         except Exception as e:
-            self.get_logger().error(f"Error sending rudder position: {e}")
+            self.get_logger().error(f"Error setting rudder angle: {e}")
             return False
     
     def command_callback(self, msg):
@@ -129,30 +161,41 @@ class RudderControlNode(Node):
         Handle rudder command messages (angles)
         
         Args:
-            msg: Float32 message with angle in degrees (-45 to 45)
+            msg: Float32 message with rudder angle in degrees (-21 to 21)
         """
-        angle = msg.data
-        position = self.angle_to_position(angle)
+        rudder_angle = msg.data
         
-        self.get_logger().info(f"Received angle command: {angle:.1f}° -> position: {position}")
-        self.target_position = position
+        # Validate input range
+        if rudder_angle < self.MIN_RUDDER_ANGLE or rudder_angle > self.MAX_RUDDER_ANGLE:
+            self.get_logger().warn(
+                f"Received rudder angle {rudder_angle:.1f}° is outside valid range "
+                f"({self.MIN_RUDDER_ANGLE}° to {self.MAX_RUDDER_ANGLE}°). Clamping."
+            )
+        
+        servo_position = self.rudder_angle_to_servo_position(rudder_angle)
+        
+        self.get_logger().info(
+            f"Received rudder command: {rudder_angle:+.1f}° → servo position: {servo_position}°"
+        )
+        
+        self.target_rudder_angle = rudder_angle
     
     def update_rudder(self):
-        """Periodic update - send position to Arduino if needed"""
-        if self.target_position != self.current_position:
-            self.set_rudder_position(self.target_position)
+        """Periodic update - set rudder to target angle if needed"""
+        if abs(self.target_rudder_angle - self.current_rudder_angle) > 0.1:  # 0.1° tolerance
+            self.set_rudder_angle(self.target_rudder_angle)
     
     def publish_position(self):
-        """Publish current rudder position"""
+        """Publish current rudder angle"""
         msg = Float32()
-        msg.data = float(self.current_position)
+        msg.data = float(self.current_rudder_angle)
         self.position_publisher.publish(msg)
     
     def destroy_node(self):
         """Clean up and center rudder on shutdown"""
         try:
-            # Return to center position
-            self.set_rudder_position(self.CENTER_POSITION)
+            # Return to neutral position (0°)
+            self.set_rudder_angle(0.0)
             time.sleep(0.5)  # Give it time to center
             self.get_logger().info("Centered rudder on shutdown")
         except Exception as e:
