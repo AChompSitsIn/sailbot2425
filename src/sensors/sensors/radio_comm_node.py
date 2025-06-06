@@ -178,7 +178,7 @@ class RadioCommNode(Node):
         """Process RC rudder command (old format with byte value)"""
         # Convert byte (0-255) back to angle (-45 to 45 degrees)
         rudder_angle = (data_byte * 90.0 / 255.0) - 45.0
-
+        rudder_angle = round(rudder_angle, 0)
         # Publish rudder command
         msg = Float32()
         msg.data = rudder_angle
