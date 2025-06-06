@@ -298,7 +298,7 @@ class WinchControlNode(Node):
         """Periodic update - move to target angle if needed and publish position"""
         # Check if we need to move to target
         if abs(self.target_angle) != self.current_angle:
-            self.move_to_angle(self.target_angle)
+            self.move_to_angle(abs(self.target_angle))
         else:
             # Just publish current position
             self.publish_position()

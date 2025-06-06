@@ -17,7 +17,7 @@ class WindSensorNode(Node):
     """
     
     # Arduino I2C configuration (using the winch Arduino)
-    ARDUINO_ADDRESS = 0x08
+    ARDUINO_ADDRESS = 0x09
     I2C_BUS = 1  # Use I2C bus 1
     
     def __init__(self):

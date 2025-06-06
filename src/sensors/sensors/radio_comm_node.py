@@ -175,7 +175,7 @@ class RadioCommNode(Node):
         self.get_logger().debug(f"Received wind direction: {msg.data:.1f}°")
 
     def process_rc_rudder_command(self, data_byte):
-        """Process RC rudder command"""
+        """Process RC rudder command (old format with byte value)"""
         # Convert byte (0-255) back to angle (-45 to 45 degrees)
         rudder_angle = (data_byte * 90.0 / 255.0) - 45.0
 
@@ -184,13 +184,37 @@ class RadioCommNode(Node):
         msg.data = rudder_angle
         self.rudder_command_publisher.publish(msg)
 
-        self.get_logger().info(f'RC Rudder command: {rudder_angle:.1f}°')
+        self.get_logger().info(f'RC Rudder command (byte format): {rudder_angle:.1f}°')
 
     def process_rc_sail_command(self, data_byte):
-        """Process RC sail command"""
+        """Process RC sail command (old format with byte value)"""
         # Convert byte (0-255) back to angle (0 to 90 degrees)
         sail_angle = data_byte * 90.0 / 255.0
 
+        # Publish sail angle command
+        msg = Float32()
+        msg.data = sail_angle
+        self.sail_angle_publisher.publish(msg)
+
+        self.get_logger().info(f'RC Sail command (byte format): {sail_angle:.1f}°')
+
+    def process_rc_rudder_angle(self, rudder_angle):
+        """Process RC rudder command with direct angle value"""
+        # Clamp to valid range
+        rudder_angle = max(-45.0, min(45.0, rudder_angle))
+        
+        # Publish rudder command
+        msg = Float32()
+        msg.data = rudder_angle
+        self.rudder_command_publisher.publish(msg)
+
+        self.get_logger().info(f'RC Rudder command: {rudder_angle:.1f}°')
+
+    def process_rc_sail_angle(self, sail_angle):
+        """Process RC sail command with direct angle value"""
+        # Clamp to valid range
+        sail_angle = max(0.0, min(90.0, sail_angle))
+        
         # Publish sail angle command
         msg = Float32()
         msg.data = sail_angle
@@ -218,17 +242,51 @@ class RadioCommNode(Node):
                             # Read one byte
                             buffer += self.serial_conn.read(1)
 
-                            # Check for command header (0xC0)
-                            if len(buffer) == 1 and buffer[0] != 0xC0:
+                            # Check for command headers (0xC0 or 0xAA)
+                            if len(buffer) == 1 and buffer[0] not in [0xC0, 0xAA]:
                                 buffer = bytearray()
                                 continue
 
-                            # Process based on command type
-                            if len(buffer) >= 2:
+                            # Handle new format (0xAA header) for RC commands
+                            if buffer[0] == 0xAA and len(buffer) >= 2:
                                 command = buffer[1]
 
-                                # RC commands need 4 bytes total
-                                if command in [10, 11]:  # RC commands
+                                # New RC format needs 5 bytes total
+                                if command in [10, 11] and len(buffer) >= 5:
+                                    # Extract 2-byte value (little-endian) and checksum
+                                    value_low = buffer[2]
+                                    value_high = buffer[3]
+                                    checksum = buffer[4]
+                                    
+                                    # Reconstruct the value
+                                    value = value_low | (value_high << 8)
+                                    
+                                    # Validate checksum
+                                    expected_checksum = (command ^ value) & 0xFF
+                                    if checksum == expected_checksum:
+                                        # Send acknowledgment
+                                        ack_msg = bytearray([0xA0, command, command ^ 0xFF])
+                                        self.serial_conn.write(ack_msg)
+
+                                        # Process RC command with direct angle value
+                                        if command == 10:  # Rudder
+                                            # Value is already the angle in degrees
+                                            self.process_rc_rudder_angle(float(value))
+                                        elif command == 11:  # Sail
+                                            # Value is already the angle in degrees
+                                            self.process_rc_sail_angle(float(value))
+                                    else:
+                                        self.get_logger().warning(f'Invalid checksum for RC command {command}')
+
+                                    # Reset buffer
+                                    buffer = bytearray()
+
+                            # Handle old format (0xC0 header)
+                            elif buffer[0] == 0xC0 and len(buffer) >= 2:
+                                command = buffer[1]
+
+                                # Old RC commands need 4 bytes total
+                                if command in [10, 11]:
                                     if len(buffer) >= 4:
                                         # Extract data and checksum
                                         data_byte = buffer[2]
@@ -241,7 +299,7 @@ class RadioCommNode(Node):
                                             ack_msg = bytearray([0xA0, command, command ^ 0xFF])
                                             self.serial_conn.write(ack_msg)
 
-                                            # Process RC command
+                                            # Process RC command (old byte format)
                                             if command == 10:  # Rudder
                                                 self.process_rc_rudder_command(data_byte)
                                             elif command == 11:  # Sail
