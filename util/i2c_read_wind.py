@@ -4,7 +4,7 @@ import struct
 from smbus2 import SMBus
 
 I2C_BUS = 1
-ARDUINO_ADDR = 0x08
+ARDUINO_ADDR = 0x09
 
 def read_wind_float():
     with SMBus(I2C_BUS) as bus:

@@ -3,7 +3,7 @@ import sys
 from smbus2 import SMBus
 
 I2C_BUS = 1
-ARDUINO_ADDR = 0x09
+ARDUINO_ADDR = 0x08
 SERVO_CMD = 0x20
 NEUTRAL_SERVO_ANGLE = 57  # True 0 position for rudder
 MIN_RUDDER_ANGLE = -21    # Maximum left

@@ -19,7 +19,7 @@ class RudderControlNode(Node):
     """
     
     # Arduino I2C configuration
-    RUDDER_ADDRESS = 0x09
+    RUDDER_ADDRESS = 0x08
     I2C_BUS = 1  # Use I2C bus 1
     SERVO_CMD = 0x20  # Command byte for servo control
     
