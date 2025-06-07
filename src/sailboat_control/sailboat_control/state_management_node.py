@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32, String
+from std_msgs.msg import Int32, String, Float32
 from .boat import Boat, ControlMode
 import json
 
@@ -22,6 +22,19 @@ class StateManagementNode(Node):
         self.status_publisher = self.create_publisher(
             String,
             'boat_status',
+            10
+        )
+
+        # Publishers for rudder and sail control
+        self.rudder_publisher = self.create_publisher(
+            Float32,
+            'rudder/command',
+            10
+        )
+        
+        self.sail_publisher = self.create_publisher(
+            Float32,
+            'sail/angle',
             10
         )
 
@@ -61,6 +74,10 @@ class StateManagementNode(Node):
 
     def _handle_rc_control(self):
         """handle RC control command"""
+        # If switching from autonomous to RC, mark it as permanent
+        if self.boat.state.control_mode == ControlMode.AUTONOMOUS:
+            self.boat.state.rc_enabled_after_autonomous = True
+        
         self.boat.state.control_mode = ControlMode.RC
         self.get_logger().info("Switched to RC control")
         # Call RC control method
@@ -80,10 +97,15 @@ class StateManagementNode(Node):
         last_waypoint = self.boat.handle_rc_interrupt()
         if last_waypoint:
             self.get_logger().info(f"RC interrupt - last waypoint: {last_waypoint}")
-        # Switch to RC control during interrupt
+        
+        # Set sail and rudder to neutral positions
+        self._set_rudder_angle(0.0)
+        self._set_sail_angle(0.0)
+        
+        # Switch to RC control permanently
         if hasattr(self.boat, 'event_control') and self.boat.event_control:
             self.boat.event_control.handle_rc()
-            self.boat.event_control.disable_autonomous_navigation() # should enable rc flag (no nav node control)
+            self.boat.event_control.disable_autonomous_navigation() # Disable navigation control
 
     def _handle_resume_autonomous(self):
         """handle resume autonomous command"""
@@ -136,6 +158,20 @@ class StateManagementNode(Node):
 
         # Log status update
         self.get_logger().debug(f"Published status update: {status_json}")
+
+    def _set_rudder_angle(self, angle: float):
+        """Set rudder angle"""
+        msg = Float32()
+        msg.data = angle
+        self.rudder_publisher.publish(msg)
+        self.get_logger().info(f"Set rudder angle to {angle}°")
+    
+    def _set_sail_angle(self, angle: float):
+        """Set sail angle"""
+        msg = Float32()
+        msg.data = angle
+        self.sail_publisher.publish(msg)
+        self.get_logger().info(f"Set sail angle to {angle}°")
 
 def main(args=None):
     rclpy.init(args=args)

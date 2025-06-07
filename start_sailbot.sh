@@ -9,9 +9,6 @@ NC='\033[0m' # No Color
 
 echo -e "${YELLOW}===== Starting Sailbot System =====${NC}"
 
-# Warm-up pause
-sleep 3
-
 # Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -22,7 +19,6 @@ echo -e "${GREEN}Workspace directory: $(pwd)${NC}"
 # Source ROS
 echo -e "${YELLOW}Sourcing ROS...${NC}"
 source /opt/ros/jazzy/setup.bash
-sleep 2
 
 # Check for dependencies
 echo -e "${YELLOW}Checking dependencies...${NC}"
@@ -49,13 +45,9 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Post-build delay
-sleep 5
-
 # Source the workspace
 echo -e "${YELLOW}Sourcing workspace...${NC}"
 source install/setup.bash
-sleep 2
 
 # Start the nodes
 echo -e "${YELLOW}Starting ROS nodes...${NC}"
@@ -66,13 +58,14 @@ start_node() {
     echo -e "${GREEN}Starting $1 $2...${NC}"
     ros2 run $1 $2 &
     pids+=($!)
-    sleep 4  # Increased delay for stability
+    sleep 1  # Small delay for node startup
 }
 
 start_node sensors gps
 start_node sensors rudder_control
 start_node sensors winch_control
 start_node sensors wind_sensor
+start_node sensors wind_smoother
 start_node sensors radio_comm
 start_node sailboat_control navigation
 start_node sailboat_control state_management

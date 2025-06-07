@@ -13,6 +13,7 @@ class BoatState:
         self.last_completed_waypoint: Optional[Waypoint] = None
         self.is_event_active: bool = False
         self.autonomous_enabled: bool = False
+        self.rc_enabled_after_autonomous: bool = False  # Track if RC was enabled after autonomous mode
 
 class Boat:
     def __init__(self, event_type: str, node: Node):
@@ -67,14 +68,15 @@ class Boat:
         self.node.get_logger().info(f"Autonomous mode started for {self.event_type}")
 
     def handle_rc_interrupt(self) -> Optional[Waypoint]:
-        """handle RC interrupt for autonomous events"""
+        """handle RC interrupt for autonomous events - switches to RC mode permanently"""
         if not self.state.autonomous_enabled:
             return None
             
-        if self.state.control_mode != ControlMode.RC_INTERRUPT:
-            self.state.control_mode = ControlMode.RC_INTERRUPT
+        if self.state.control_mode != ControlMode.RC:
+            self.state.control_mode = ControlMode.RC
+            self.state.rc_enabled_after_autonomous = True  # Mark that RC was enabled after autonomous
             # Log the change
-            self.node.get_logger().info("RC interrupt activated")
+            self.node.get_logger().info("RC interrupt activated - switching to RC mode (permanent)")
             return self.state.last_completed_waypoint
         return None
 
@@ -83,7 +85,12 @@ class Boat:
         if not self.state.autonomous_enabled:
             return
             
-        if self.state.control_mode == ControlMode.RC_INTERRUPT:
+        # Prevent resuming autonomous if RC was enabled after autonomous mode
+        if self.state.rc_enabled_after_autonomous:
+            self.node.get_logger().warn("Cannot resume autonomous - RC was enabled after autonomous mode")
+            return
+            
+        if self.state.control_mode == ControlMode.RC:
             self.state.control_mode = ControlMode.AUTONOMOUS
             # Log the change
             self.node.get_logger().info("Autonomous control resumed")

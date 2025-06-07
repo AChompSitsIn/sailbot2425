@@ -246,15 +246,15 @@ class NavigationNode(Node):
         """Handle boat status updates to monitor mode changes"""
         try:
             status = json.loads(msg.data)
-            mode = status.get('mode', '')
+            control_mode = status.get('control_mode', '')
             
             # If mode is RC, disable autonomous navigation
-            if mode == 'rc':
+            if control_mode == 'rc':
                 if self.navigation_enabled:
                     self.navigation_enabled = False
                     self.get_logger().info("Navigation disabled - boat in RC mode")
             # If mode is autonomous, enable navigation 
-            elif mode == 'autonomous':
+            elif control_mode == 'autonomous':
                 if not self.navigation_enabled:
                     self.navigation_enabled = True
                     self.rudder_pid.reset()
