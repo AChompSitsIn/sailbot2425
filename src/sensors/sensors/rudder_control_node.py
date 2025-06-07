@@ -2,14 +2,14 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32
-import smbus
+import serial
 import time
 
 class RudderControlNode(Node):
     """
-    ROS2 Node for controlling the rudder servo via I2C
+    ROS2 Node for controlling the rudder servo via USB serial
     
-    Uses direct I2C communication with the rudder Arduino (address 0x09)
+    Uses USB serial communication with the control Arduino
     
     Subscribes to:
     - 'rudder/command': Angle in degrees (-21 to 21)
@@ -18,9 +18,9 @@ class RudderControlNode(Node):
     - 'rudder/position': Current position of the rudder (servo angle 36-78)
     """
     
-    # Arduino I2C configuration
-    RUDDER_ADDRESS = 0x08
-    I2C_BUS = 1  # Use I2C bus 1
+    # Serial configuration
+    SERIAL_PORT = '/dev/arduino_control'
+    BAUD_RATE = 115200
     SERVO_CMD = 0x20  # Command byte for servo control
     
     # Rudder configuration based on new system
@@ -36,19 +36,20 @@ class RudderControlNode(Node):
         super().__init__('rudder_control_node')
         
         # Declare and get parameters
-        self.declare_parameter('i2c_bus', self.I2C_BUS)
-        self.declare_parameter('rudder_address', self.RUDDER_ADDRESS)
+        self.declare_parameter('serial_port', self.SERIAL_PORT)
+        self.declare_parameter('baud_rate', self.BAUD_RATE)
         self.declare_parameter('update_rate', 10.0)  # Hz
         
         # Get parameter values
-        self.i2c_bus = self.get_parameter('i2c_bus').value
-        self.rudder_address = self.get_parameter('rudder_address').value
+        self.serial_port = self.get_parameter('serial_port').value
+        self.baud_rate = self.get_parameter('baud_rate').value
         self.update_rate = self.get_parameter('update_rate').value
         
         # Initialize state variables
         self.current_rudder_angle = 0.0  # Current rudder angle (-21 to +21)
         self.current_servo_position = self.NEUTRAL_SERVO_ANGLE  # Current servo position
         self.target_rudder_angle = 0.0
+        self.ser = None
         
         # Initialize publishers
         self.position_publisher = self.create_publisher(
@@ -65,19 +66,18 @@ class RudderControlNode(Node):
             10
         )
         
-        # Initialize I2C
+        # Initialize serial connection
         try:
-            self.bus = smbus.SMBus(self.i2c_bus)
+            self.ser = serial.Serial(self.serial_port, self.baud_rate, timeout=1)
             self.get_logger().info(
-                f"I2C initialized on bus {self.i2c_bus}, "
-                f"address 0x{self.rudder_address:02X}"
+                f"Serial connection established on {self.serial_port} at {self.baud_rate} baud"
             )
             
             # Set initial position to neutral (0°)
             self.set_rudder_angle(0.0)
             
-        except Exception as e:
-            self.get_logger().error(f"Failed to initialize I2C: {e}")
+        except serial.SerialException as e:
+            self.get_logger().error(f"Failed to initialize serial connection: {e}")
         
         # Create timer for periodic updates
         self.timer = self.create_timer(1.0/self.update_rate, self.update_rudder)
@@ -131,13 +131,14 @@ class RudderControlNode(Node):
         # Convert to servo position
         servo_position = self.rudder_angle_to_servo_position(rudder_angle)
         
+        if not self.ser or not self.ser.is_open:
+            self.get_logger().error("Serial connection not available")
+            return False
+            
         try:
-            # Send command using block data with command byte
-            self.bus.write_i2c_block_data(
-                self.rudder_address, 
-                self.SERVO_CMD, 
-                [servo_position]
-            )
+            # Send command using serial (command byte + angle)
+            command = bytes([self.SERVO_CMD, servo_position])
+            self.ser.write(command)
             
             # Update current state
             self.current_servo_position = servo_position
@@ -198,6 +199,11 @@ class RudderControlNode(Node):
             self.set_rudder_angle(0.0)
             time.sleep(0.5)  # Give it time to center
             self.get_logger().info("Centered rudder on shutdown")
+            
+            # Close serial connection
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+                self.get_logger().info("Serial port closed")
         except Exception as e:
             self.get_logger().error(f"Error on shutdown: {e}")
         

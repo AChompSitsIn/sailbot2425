@@ -2,15 +2,16 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32
-import smbus
+import serial
+import struct
 import time
 import math
 
 class WinchControlNode(Node):
     """
-    ROS2 Node for controlling the winch stepper motor via I2C
+    ROS2 Node for controlling the winch stepper motor via USB serial
 
-    Uses direct I2C communication with the winch Arduino (address 0x08)
+    Uses USB serial communication with the control Arduino
 
     Subscribes to:
     - 'sail/angle': Target sail angle command in degrees (e.g., -88 to 88)
@@ -19,9 +20,9 @@ class WinchControlNode(Node):
     - 'sail/position': Current estimated sail angle in degrees
     """
 
-    # Arduino I2C configuration
-    WINCH_ADDRESS = 0x08
-    I2C_BUS = 1  # Use I2C bus 1
+    # Serial configuration
+    SERIAL_PORT = '/dev/arduino_control'
+    BAUD_RATE = 115200
 
     # Command codes (matching the standalone script)
     CMD_WINCH_CW_STEPS = 0x12   # Clockwise - let sail out
@@ -42,8 +43,8 @@ class WinchControlNode(Node):
         super().__init__('winch_control_node')
 
         # Declare and get parameters
-        self.declare_parameter('i2c_bus', self.I2C_BUS)
-        self.declare_parameter('winch_address', self.WINCH_ADDRESS)
+        self.declare_parameter('serial_port', self.SERIAL_PORT)
+        self.declare_parameter('baud_rate', self.BAUD_RATE)
         self.declare_parameter('update_rate', 10.0)  # Hz
         self.declare_parameter('boom_length', self.BOOM_LENGTH)
         self.declare_parameter('winch_to_mast', self.WINCH_TO_MAST)
@@ -52,8 +53,8 @@ class WinchControlNode(Node):
         self.declare_parameter('steps_per_revolution', self.STEPS_PER_REVOLUTION)
 
         # Get parameter values
-        self.i2c_bus = self.get_parameter('i2c_bus').value
-        self.winch_address = self.get_parameter('winch_address').value
+        self.serial_port = self.get_parameter('serial_port').value
+        self.baud_rate = self.get_parameter('baud_rate').value
         self.update_rate = self.get_parameter('update_rate').value
         self.boom_length = self.get_parameter('boom_length').value
         self.winch_to_mast = self.get_parameter('winch_to_mast').value
@@ -65,6 +66,7 @@ class WinchControlNode(Node):
         self.current_angle = 0.0      # Current sail angle in degrees
         self.current_steps = 0        # Current step position
         self.target_angle = 0.0       # Target sail angle
+        self.ser = None
 
         # Initialize publishers
         self.position_publisher = self.create_publisher(
@@ -81,12 +83,11 @@ class WinchControlNode(Node):
             10
         )
 
-        # Initialize I2C
+        # Initialize serial connection
         try:
-            self.bus = smbus.SMBus(self.i2c_bus)
+            self.ser = serial.Serial(self.serial_port, self.baud_rate, timeout=1)
             self.get_logger().info(
-                f"I2C initialized on bus {self.i2c_bus}, "
-                f"address 0x{self.winch_address:02X}"
+                f"Serial connection established on {self.serial_port} at {self.baud_rate} baud"
             )
             
             # Log sail parameters
@@ -180,12 +181,14 @@ class WinchControlNode(Node):
             self.get_logger().error(f"Steps must be between 0 and 100,000 (got {steps})")
             return False
         
-        try:
-            # Prepare command: 1 byte command + 4 bytes step count (big-endian)
-            data = [(steps >> 24) & 0xFF, (steps >> 16) & 0xFF, 
-                   (steps >> 8) & 0xFF, steps & 0xFF]
+        if not self.ser or not self.ser.is_open:
+            self.get_logger().error("Serial connection not available")
+            return False
             
-            self.bus.write_i2c_block_data(self.winch_address, self.CMD_WINCH_CW_STEPS, data)
+        try:
+            # Send command: 1 byte command + 4 bytes step count (big-endian)
+            command = bytes([self.CMD_WINCH_CW_STEPS]) + struct.pack('>I', steps)
+            self.ser.write(command)
             self.get_logger().debug(f"Sent: CW {steps} steps (let sail out)")
             return True
             
@@ -199,12 +202,14 @@ class WinchControlNode(Node):
             self.get_logger().error(f"Steps must be between 0 and 100,000 (got {steps})")
             return False
         
-        try:
-            # Prepare command: 1 byte command + 4 bytes step count (big-endian)
-            data = [(steps >> 24) & 0xFF, (steps >> 16) & 0xFF, 
-                   (steps >> 8) & 0xFF, steps & 0xFF]
+        if not self.ser or not self.ser.is_open:
+            self.get_logger().error("Serial connection not available")
+            return False
             
-            self.bus.write_i2c_block_data(self.winch_address, self.CMD_WINCH_CCW_STEPS, data)
+        try:
+            # Send command: 1 byte command + 4 bytes step count (big-endian)
+            command = bytes([self.CMD_WINCH_CCW_STEPS]) + struct.pack('>I', steps)
+            self.ser.write(command)
             self.get_logger().debug(f"Sent: CCW {steps} steps (bring sail in)")
             return True
             
@@ -314,6 +319,11 @@ class WinchControlNode(Node):
         """Clean up on shutdown"""
         try:
             self.get_logger().info("Winch control node shutting down")
+            
+            # Close serial connection
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+                self.get_logger().info("Serial port closed")
         except Exception as e:
             self.get_logger().error(f"Error on shutdown: {e}")
 
