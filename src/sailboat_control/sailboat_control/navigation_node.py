@@ -174,6 +174,14 @@ class NavigationNode(Node):
             10
         )
 
+        # Boat status subscription to monitor mode changes
+        self.boat_status_subscription = self.create_subscription(
+            String,
+            'boat_status',
+            self.boat_status_callback,
+            10
+        )
+
         self.get_logger().info("Navigation node initialized with PID controller")
 
     def gps_callback(self, msg: NavSatFix):
@@ -233,6 +241,27 @@ class NavigationNode(Node):
         elif command == 0:  # Disable autonomous navigation
             self.navigation_enabled = False
             self.get_logger().info("Autonomous navigation disabled")
+
+    def boat_status_callback(self, msg: String):
+        """Handle boat status updates to monitor mode changes"""
+        try:
+            status = json.loads(msg.data)
+            mode = status.get('mode', '')
+            
+            # If mode is RC, disable autonomous navigation
+            if mode == 'rc':
+                if self.navigation_enabled:
+                    self.navigation_enabled = False
+                    self.get_logger().info("Navigation disabled - boat in RC mode")
+            # If mode is autonomous, enable navigation 
+            elif mode == 'autonomous':
+                if not self.navigation_enabled:
+                    self.navigation_enabled = True
+                    self.rudder_pid.reset()
+                    self.get_logger().info("Navigation enabled - boat in autonomous mode")
+                    
+        except Exception as e:
+            self.get_logger().error(f"Error processing boat status: {e}")
 
     def waypoint_callback(self, msg: String):
         """Handle new target waypoint from event controller"""
@@ -390,7 +419,10 @@ class NavigationNode(Node):
         Rudder control timer callback - runs at higher rate
         Updates rudder angle based on current position and heading
         """
-        if not self.navigation_enabled or not self.active_course:
+        if not self.navigation_enabled:
+            return
+            
+        if not self.active_course:
             return
 
         # Get current target waypoint
